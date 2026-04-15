@@ -1,0 +1,91 @@
+# RuStore Monitor Bot
+
+Telegram-бот для мониторинга отзывов, оценок и платежей приложения в RuStore.
+
+## Возможности
+
+- **Новые отзывы** — мгновенное уведомление о новых отзывах с текстом и оценкой
+- **Редактирование отзывов** — отслеживание изменённых отзывов
+- **Оценки без текста** — обнаружение «тихих» оценок по изменению распределения
+- **Платежи** — уведомления о новых подтверждённых платежах (покупки и подписки)
+- **Статистика** — текущий средний рейтинг и распределение оценок в каждом уведомлении
+
+## Быстрый старт
+
+### Docker Compose (рекомендуется)
+
+1. Клонируйте репозиторий:
+
+```bash
+git clone https://github.com/isrofilov/rustore-monitor.git
+cd rustore-monitor
+```
+
+2. Скопируйте `.env.example` в `.env` и заполните переменные:
+
+```bash
+cp .env.example .env
+```
+
+3. Запустите:
+
+```bash
+docker compose up -d
+```
+
+Docker Compose автоматически подхватывает переменные из `.env` файла и прокидывает их в контейнер через секцию `environment` в `docker-compose.yml`.
+
+### Docker (без Compose)
+
+```bash
+docker run -d \
+  --name rustore-monitor \
+  --restart unless-stopped \
+  --env-file .env \
+  -v rustore-monitor:/data \
+  isrofilov/rustore-monitor:latest
+```
+
+### Запуск из исходников
+
+```bash
+git clone https://github.com/isrofilov/rustore-monitor.git
+cd rustore-monitor
+pip install -r requirements.txt
+python bot.py
+```
+
+## Переменные окружения
+
+| Переменная | Обязательная | Описание |
+|---|---|---|
+| `RUSTORE_KEY_ID` | да | ID ключа API RuStore |
+| `RUSTORE_PRIVATE_KEY` | да | Приватный RSA-ключ в формате base64 |
+| `RUSTORE_PACKAGE_NAME` | да | Имя пакета приложения (например, `com.example.app`) |
+| `RUSTORE_APP_ID` | да | Числовой ID приложения из консоли RuStore |
+| `TELEGRAM_BOT_TOKEN` | да | Токен Telegram-бота (получить у [@BotFather](https://t.me/BotFather)) |
+| `TELEGRAM_CHAT_ID` | да | ID чата для уведомлений |
+| `TELEGRAM_THREAD_ID` | нет | ID темы в супергруппе |
+| `TELEGRAM_DOMAIN` | нет | Домен Telegram API (по умолчанию `api.telegram.org`) |
+| `POLL_INTERVAL` | нет | Интервал опроса в секундах (по умолчанию `300`) |
+
+## Получение ключей RuStore API
+
+1. Откройте [Консоль RuStore](https://console.rustore.ru/)
+2. Перейдите в раздел **Приложения** → **API RuStore**
+3. Создайте новый ключ, выбрав следующие методы:
+   - Получение списка продуктов приложения
+   - Получение списка подписок приложения
+   - Получение рейтинга приложения
+   - Получение отзывов приложения
+   - Получение данных платежа
+4. Скопируйте `KEY_ID` и приватный ключ
+5. `APP_ID` это номер вашего приложения в RuStore. Он указан в адресе страницы приложения в консоли (например: в `.../apps/123456/...` нужное значение — `123456`).
+
+## Хранение состояния
+
+Бот сохраняет состояние в SQLite-базе `/data/state.db` внутри контейнера. При использовании Docker Compose данные хранятся в именованном томе `rustore-monitor` и сохраняются между перезапусками.
+
+## Лицензия
+
+[MIT](LICENSE)

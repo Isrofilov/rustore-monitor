@@ -1,0 +1,21 @@
+services:
+  rustore-bot:
+    image: isrofilov/rustore-monitor:latest
+    build: .
+    container_name: rustore-monitor
+    restart: unless-stopped
+    environment:
+      - RUSTORE_KEY_ID=${RUSTORE_KEY_ID}
+      - RUSTORE_PRIVATE_KEY=${RUSTORE_PRIVATE_KEY}
+      - RUSTORE_PACKAGE_NAME=${RUSTORE_PACKAGE_NAME}
+      - RUSTORE_APP_ID=${RUSTORE_APP_ID}
+      - TELEGRAM_DOMAIN=${TELEGRAM_DOMAIN}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_THREAD_ID=${TELEGRAM_THREAD_ID}
+      - POLL_INTERVAL=${POLL_INTERVAL}
+    volumes:
+      - rustore-monitor:/data
+
+volumes:
+  rustore-monitor:
