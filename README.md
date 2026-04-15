@@ -68,6 +68,7 @@ python bot.py
 | `TELEGRAM_THREAD_ID` | нет | ID темы в супергруппе |
 | `TELEGRAM_DOMAIN` | нет | Домен Telegram API (по умолчанию `api.telegram.org`) |
 | `POLL_INTERVAL` | нет | Интервал опроса в секундах (по умолчанию `300`) |
+| `LOCAL_TZ`  | нет | Смещение часового пояса в часах (например, 3 для UTC+3). По умолчанию — 3 |
 
 ## Получение ключей RuStore API
 
