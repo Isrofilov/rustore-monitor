@@ -14,6 +14,7 @@
     TELEGRAM_CHAT_ID     — id чата для уведомлений
     TELEGRAM_THREAD_ID   — id темы в супергруппе (опционально)
     POLL_INTERVAL        — интервал опроса в секундах (по умолчанию 300)
+    TZ_OFFSET            — смещение часового пояса в часах (по умолчанию +3, МСК)
 """
 
 import os
@@ -52,6 +53,8 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 TELEGRAM_THREAD_ID = os.environ.get("TELEGRAM_THREAD_ID")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL") or "300")
+TZ_OFFSET = int(os.environ.get("TZ_OFFSET") or "3")
+LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=TZ_OFFSET))
 
 # ── авторизация RuStore ──
 
@@ -495,7 +498,7 @@ def check_updates():
                 messages.append(format_silent_ratings(changes, rating))
 
         # ── проверка платежей ──
-        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
         current_invoice_ids: set[int] = set()
         try:
             invoices = fetch_invoices(today)
@@ -530,7 +533,7 @@ def check_updates():
             conn,
             total_ratings=str(rating["totalRatings"]),
             average=str(rating["averageUserRating"]),
-            last_check=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            last_check=datetime.datetime.now(LOCAL_TZ).isoformat(),
         )
         conn.commit()
     finally:
