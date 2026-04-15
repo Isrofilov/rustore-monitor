@@ -1,7 +1,6 @@
 services:
   rustore-bot:
     image: isrofilov/rustore-monitor:latest
-    build: .
     container_name: rustore-monitor
     restart: unless-stopped
     environment:
