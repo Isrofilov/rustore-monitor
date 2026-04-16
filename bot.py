@@ -426,7 +426,7 @@ def format_new_invoice(inv: dict, products_map: dict) -> str:
     order = inv.get("order", {})
     payment = inv.get("paymentInfo", {})
 
-    amount = order.get("amountCurrent", 0) / 100
+    amount = order.get("amountCurrent", 0) // 100
     currency = order.get("currency", "RUB")
     if currency == "RUB":
         currency = "₽"
