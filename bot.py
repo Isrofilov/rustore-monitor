@@ -500,6 +500,7 @@ def check_updates():
         # ── проверка платежей ──
         today = datetime.datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
         current_invoice_ids: set[int] = set()
+
         try:
             invoices = fetch_invoices(today)
 
@@ -508,11 +509,27 @@ def check_updates():
 
             new_invoices = detect_new_invoices(invoices, old_invoice_ids)
 
-            if old_invoice_ids or has_invoice_date(conn, today):
+            is_first_run = get_meta(conn, "payments_initialized") is None
+
+            log.info(
+                "Payments: total=%d, old=%d, new=%d, first_run=%s",
+                len(invoices),
+                len(old_invoice_ids),
+                len(new_invoices),
+                is_first_run,
+            )
+
+            # отправляем ТОЛЬКО если это не первый запуск
+            if not is_first_run and new_invoices:
                 products_map = all_products_map()
 
                 for inv in new_invoices:
-                    messages.append(format_new_invoice(inv, products_map))
+                    msg = format_new_invoice(inv, products_map)
+                    messages.append(msg)
+
+            # помечаем, что инициализация была
+            if is_first_run:
+                save_meta(conn, payments_initialized="1")
 
         except Exception as e:
             log.exception("Ошибка при проверке платежей: %s", e)
