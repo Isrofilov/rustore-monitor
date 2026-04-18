@@ -412,9 +412,9 @@ def format_silent_ratings(changes: dict[int, int], rating: dict) -> str:
     parts = []
     for star, delta in sorted(changes.items(), reverse=True):
         if delta > 0:
-            parts.append(f"+{delta} × ⭐{star}")
+            parts.append(f"+{delta} × {star}⭐")
         elif delta < 0:
-            parts.append(f"{delta} × ⭐{star}")
+            parts.append(f"{delta} × {star}⭐")
     changes_str = ",  ".join(parts)
     return (
         f"⭐ <b>Новая оценка:</b> {changes_str}\n\n"
