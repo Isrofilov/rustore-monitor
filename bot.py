@@ -19,6 +19,7 @@
 
 import os
 import sys
+import html
 import time
 import base64
 import logging
@@ -60,6 +61,15 @@ LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=TZ_OFFSET))
 
 _cached_token = None
 _token_expires_at = 0
+_private_key = None
+
+
+def _get_private_key():
+    """Парсит приватный RSA-ключ один раз и кеширует."""
+    global _private_key
+    if _private_key is None:
+        _private_key = RSA.import_key(base64.b64decode(PRIVATE_KEY_B64))
+    return _private_key
 
 
 def get_rustore_token() -> str:
@@ -71,7 +81,7 @@ def get_rustore_token() -> str:
         return _cached_token
 
     # подписываем запрос приватным RSA-ключом (SHA-512 + PKCS1 v1.5)
-    private_key = RSA.import_key(base64.b64decode(PRIVATE_KEY_B64))
+    private_key = _get_private_key()
 
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
     message = KEY_ID + timestamp
@@ -320,17 +330,41 @@ def save_meta(conn: sqlite3.Connection, **kwargs):
 
 
 def tg_send(text: str):
-    """Отправляет HTML-сообщение в Telegram-чат."""
+    """Отправляет HTML-сообщение в Telegram-чат с ретраями.
+
+    При исчерпании ретраев бросает исключение — чтобы caller не сохранил
+    состояние и уведомление было повторно отправлено на следующей итерации.
+    """
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
     if TELEGRAM_THREAD_ID:
         payload["message_thread_id"] = int(TELEGRAM_THREAD_ID)
-    resp = requests.post(
-        f"https://{TELEGRAM_DOMAIN}/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        json=payload,
-        timeout=15,
-    )
-    if not resp.ok:
-        log.error("Telegram send error: %s", resp.text)
+    url = f"https://{TELEGRAM_DOMAIN}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    last_error = None
+    for attempt in range(3):
+        try:
+            resp = requests.post(url, json=payload, timeout=15)
+        except requests.RequestException as e:
+            last_error = e
+            log.warning("Telegram send failed (attempt %d): %s", attempt + 1, e)
+            time.sleep(2 ** attempt)
+            continue
+
+        if resp.ok:
+            return
+
+        # rate-limit: Telegram сообщает retry_after в секундах
+        if resp.status_code == 429:
+            retry_after = resp.json().get("parameters", {}).get("retry_after", 1)
+            log.warning("Telegram 429, retry after %ds", retry_after)
+            time.sleep(retry_after)
+            continue
+
+        last_error = RuntimeError(f"HTTP {resp.status_code}: {resp.text}")
+        log.warning("Telegram send error (attempt %d): %s", attempt + 1, last_error)
+        time.sleep(2 ** attempt)
+
+    raise RuntimeError(f"Не удалось отправить в Telegram после 3 попыток: {last_error}")
 
 
 # ── форматирование сообщений ──
@@ -387,23 +421,29 @@ def format_stats(rating: dict) -> str:
 
 def format_new_review(review: dict, rating: dict) -> str:
     stars = "⭐" * review["appRating"]
-    version = f"  •  v{review['appVersionName']}" if review.get("appVersionName") else ""
+    user = html.escape(review.get("userName") or "—")
+    text = html.escape(review.get("commentText") or "")
+    version_raw = review.get("appVersionName")
+    version = f"  •  v{html.escape(version_raw)}" if version_raw else ""
     edited = "  (ред.)" if review.get("edited") else ""
     return (
         f"📝 <b>Новый отзыв в RuStore</b>\n\n"
-        f"{stars}  •  {review['userName']}{version}{edited}\n"
-        f"«{review['commentText']}»\n\n"
+        f"{stars}  •  {user}{version}{edited}\n"
+        f"«{text}»\n\n"
         f"{format_stats(rating)}"
     )
 
 
 def format_edited_review(review: dict, rating: dict) -> str:
     stars = "⭐" * review["appRating"]
-    version = f"  •  v{review['appVersionName']}" if review.get("appVersionName") else ""
+    user = html.escape(review.get("userName") or "—")
+    text = html.escape(review.get("commentText") or "")
+    version_raw = review.get("appVersionName")
+    version = f"  •  v{html.escape(version_raw)}" if version_raw else ""
     return (
         f"✏️ <b>Отзыв изменён</b>\n\n"
-        f"{stars}  •  {review['userName']}{version}\n"
-        f"«{review['commentText']}»\n\n"
+        f"{stars}  •  {user}{version}\n"
+        f"«{text}»\n\n"
         f"{format_stats(rating)}"
     )
 
@@ -431,17 +471,16 @@ def format_new_invoice(inv: dict, products_map: dict) -> str:
     if currency == "RUB":
         currency = "₽"
 
-    visualName = order.get("visualName")
-    name = resolve_product_name(order, products_map)
+    visual_name = html.escape(order.get("visualName") or "—")
+    name = html.escape(resolve_product_name(order, products_map))
 
-    pay_date = payment.get("paymentDate") or inv.get("invoiceDate")
-    method = format_payment_method(payment)
-
+    pay_date = html.escape(payment.get("paymentDate") or inv.get("invoiceDate") or "")
+    method = html.escape(format_payment_method(payment))
 
     lines = [
         "💰 <b>Новый платёж</b>",
         "",
-        f"<b>{visualName}</b>",
+        f"<b>{visual_name}</b>",
         f"<b>Продукт:</b> {name}",
         f"<b>Сумма:</b> {amount} {currency}",
         "",
@@ -487,13 +526,21 @@ def check_updates():
                 if review["commentId"] in newly_edited and review["commentId"] not in new_ids:
                     messages.append(format_edited_review(review, rating))
 
-        # «тихие» оценки без текста — обнаруживаем по изменению распределения
-        if old_ratings and not new_ids:
-            changes = {}
+        # «тихие» оценки без текста — обнаруживаем по изменению распределения.
+        # Вклад новых отзывов из diff'а вычитаем, чтобы не дублировать уведомления.
+        if old_ratings:
+            changes: dict[int, int] = {}
             for key, star in RATING_NAMES.items():
                 diff = rating["ratings"].get(key, 0) - old_ratings.get(key, 0)
                 if diff != 0:
                     changes[star] = diff
+            for review in reviews:
+                if review["commentId"] in new_ids:
+                    star = review["appRating"]
+                    if star in changes:
+                        changes[star] -= 1
+                        if changes[star] == 0:
+                            del changes[star]
             if changes:
                 messages.append(format_silent_ratings(changes, rating))
 
@@ -531,13 +578,15 @@ def check_updates():
             if is_first_run:
                 save_meta(conn, payments_initialized="1")
 
-        except Exception as e:
-            log.exception("Ошибка при проверке платежей: %s", e)
+        except Exception:
+            log.exception("Ошибка при проверке платежей")
 
-        # отправляем уведомления в Telegram
+        # отправляем уведомления в Telegram.
+        # При ошибке tg_send бросит исключение — состояние НЕ будет сохранено,
+        # и на следующей итерации уведомления уйдут повторно (без потерь).
         for msg in messages:
             tg_send(msg)
-            time.sleep(0.5)
+            time.sleep(1.0)
 
         if not old_comment_ids:
             log.info("Первый запуск — сохраняю начальное состояние (%d отзывов)", len(reviews))
@@ -562,7 +611,7 @@ def main():
 
     # проверяем подключение при старте
     try:
-        token = get_rustore_token()
+        get_rustore_token()
         log.info("Авторизация OK")
     except Exception as e:
         log.error("Ошибка авторизации: %s", e)
@@ -572,8 +621,8 @@ def main():
         try:
             check_updates()
             log.info("Проверка завершена")
-        except Exception as e:
-            log.exception("Ошибка при проверке: %s", e)
+        except Exception:
+            log.exception("Ошибка при проверке")
         time.sleep(POLL_INTERVAL)
 
 
