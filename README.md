@@ -1,6 +1,6 @@
 # RuStore Monitor Bot
 
-Telegram-бот для мониторинга отзывов, оценок и платежей приложения в RuStore.
+Бот для мониторинга отзывов, оценок и платежей приложения в RuStore с уведомлениями в Telegram и/или Matrix.
 
 ## Возможности
 
@@ -52,7 +52,7 @@ docker run -d \
 git clone https://github.com/isrofilov/rustore-monitor.git
 cd rustore-monitor
 pip install -r requirements.txt
-python bot.py
+python -m rustore_monitor
 ```
 
 ## Переменные окружения
@@ -63,12 +63,17 @@ python bot.py
 | `RUSTORE_PRIVATE_KEY` | да | Приватный RSA-ключ в формате base64 |
 | `RUSTORE_PACKAGE_NAME` | да | Имя пакета приложения (например, `com.example.app`) |
 | `RUSTORE_APP_ID` | да | Числовой ID приложения из консоли RuStore |
-| `TELEGRAM_BOT_TOKEN` | да | Токен Telegram-бота (получить у [@BotFather](https://t.me/BotFather)) |
-| `TELEGRAM_CHAT_ID` | да | ID чата для уведомлений |
+| `TELEGRAM_BOT_TOKEN` | для Telegram | Токен Telegram-бота (получить у [@BotFather](https://t.me/BotFather)) |
+| `TELEGRAM_CHAT_ID` | для Telegram | ID чата для уведомлений |
 | `TELEGRAM_THREAD_ID` | нет | ID темы в супергруппе |
 | `TELEGRAM_DOMAIN` | нет | Домен Telegram API (по умолчанию `api.telegram.org`) |
+| `MATRIX_HOMESERVER` | для Matrix | URL домашнего сервера Matrix (например, `https://matrix.org`) |
+| `MATRIX_ACCESS_TOKEN` | для Matrix | Токен доступа Matrix-пользователя |
+| `MATRIX_ROOM_ID` | для Matrix | ID комнаты для уведомлений (например, `!abcdef:matrix.org`) |
 | `POLL_INTERVAL` | нет | Интервал опроса в секундах (по умолчанию `300`) |
 | `TZ_OFFSET` | нет | Смещение часового пояса в часах (например, `3` для UTC+3). По умолчанию — `3` (МСК) |
+
+Настройте хотя бы один канал уведомлений — Telegram (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) и/или Matrix (`MATRIX_HOMESERVER` + `MATRIX_ACCESS_TOKEN` + `MATRIX_ROOM_ID`). Можно включить оба одновременно — уведомления уйдут в каждый. Если ни один не настроен, бот завершится с ошибкой при старте.
 
 ## Получение ключей RuStore API
 
@@ -94,6 +99,36 @@ https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getUpdates
 В ответе найдите `"chat":{"id": ...}`. Для супергрупп ID начинается с `-100`.
 
 Для `TELEGRAM_THREAD_ID` — отправьте сообщение в нужную тему и посмотрите `message_thread_id` в том же ответе.
+
+## Как получить реквизиты Matrix
+
+1. **`MATRIX_HOMESERVER`** — адрес домашнего сервера, на котором зарегистрирован бот (например, `https://matrix.org` или ваш self-hosted сервер).
+2. **`MATRIX_ACCESS_TOKEN`** — токен доступа пользователя-бота. В Element: **Настройки** → **Справка и информация** → **Дополнительно** → **Access Token**. Либо через API:
+
+   ```bash
+   curl -XPOST 'https://matrix.org/_matrix/client/v3/login' \
+     -d '{"type":"m.login.password","user":"BOT_USER","password":"PASSWORD"}'
+   ```
+
+   В ответе — поле `access_token`.
+3. **`MATRIX_ROOM_ID`** — внутренний ID комнаты (начинается с `!`, не путать с алиасом `#room:server`). В Element: **Настройки комнаты** → **Дополнительно** → **Внутренний ID комнаты**. Бот-пользователь должен быть участником этой комнаты.
+
+### Как вступить ботом в комнату
+
+Бот не сможет отправлять сообщения, пока не станет участником комнаты. Варианты:
+
+- **Через клиент** — пригласите бота в комнату (по его `@user:server`) из любого Matrix-клиента, затем примите приглашение от имени бота.
+- **Через API** — вступите напрямую токеном бота. Подходит и room ID (`!...`), и алиас (`#room:server`):
+
+  ```bash
+  curl -XPOST 'https://matrix.org/_matrix/client/v3/join/!abcdef:matrix.org' \
+    -H 'Authorization: Bearer MATRIX_ACCESS_TOKEN' \
+    -H 'Content-Type: application/json' -d '{}'
+  ```
+
+  В ответе вернётся `{"room_id":"!abcdef:matrix.org"}` — значит бот в комнате. Если комната приватная, бота сначала нужно туда пригласить, иначе вступление вернёт ошибку `M_FORBIDDEN`.
+
+  Если вступаете по **алиасу**, символ `#` нужно заменить на `%23` (это разделитель фрагмента в URL), остальное можно оставить как есть: `.../join/%23room:matrix.org`.
 
 ## Первый запуск
 
