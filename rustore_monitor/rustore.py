@@ -67,15 +67,42 @@ def get_rustore_token() -> str:
 # ── запросы к API RuStore ──
 
 
+def _invalidate_token():
+    global _cached_token, _token_expires_at
+    _cached_token = None
+    _token_expires_at = 0
+
+
+def _is_token_error(resp: httpx.Response) -> bool:
+    """Ответ означает протухший/невалидный токен — стоит получить новый и повторить."""
+    if resp.status_code == 401:
+        return True
+    try:
+        message = (resp.json().get("message") or "").lower()
+    except ValueError:
+        return False
+    return "expired" in message and ("jwe" in message or "token" in message)
+
+
 def _rustore_get(url: str, label: str, **kwargs) -> dict:
-    """Выполняет GET-запрос к API RuStore с авторизацией и проверкой ответа."""
-    token = get_rustore_token()
-    resp = httpx.get(
-        url,
-        headers={"Public-Token": token},
-        timeout=15,
-        **kwargs,
-    )
+    """Выполняет GET-запрос к API RuStore с авторизацией и проверкой ответа.
+
+    Если токен отвергнут сервером раньше своего TTL — получает новый и
+    повторяет запрос один раз.
+    """
+    for attempt in range(2):
+        resp = httpx.get(
+            url,
+            headers={"Public-Token": get_rustore_token()},
+            timeout=15,
+            **kwargs,
+        )
+        if attempt == 0 and _is_token_error(resp):
+            log.warning("RuStore отверг токен (%s), получаю новый", label)
+            _invalidate_token()
+            continue
+        break
+
     resp.raise_for_status()
     data = resp.json()
     if data.get("code") != "OK":
@@ -123,7 +150,6 @@ _products_cache: dict[str, str] = {}
 
 def all_products_map() -> dict[str, str]:
     """Возвращает кешированный словарь productId → name. Загружает при первом вызове."""
-    global _products_cache
     if not _products_cache:
         _refresh_products_cache()
     return _products_cache
@@ -160,8 +186,3 @@ def fetch_invoices(date: str) -> list[dict]:
         params={"invoiceStatuses": "confirmed", "invoiceDate": date},
     )
     return body.get("content", [])
-
-
-def detect_new_invoices(invoices: list[dict], old_ids: set[int]) -> list[dict]:
-    """Фильтрует только новые платежи, которых нет в old_ids."""
-    return [inv for inv in invoices if inv["invoiceId"] not in old_ids]

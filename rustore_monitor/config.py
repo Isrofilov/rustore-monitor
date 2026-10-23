@@ -33,6 +33,11 @@ DB_FILE = Path("/data/state.db")  # база состояния внутри Doc
 
 # ── RuStore ──
 
+_REQUIRED = ("RUSTORE_KEY_ID", "RUSTORE_PRIVATE_KEY", "RUSTORE_PACKAGE_NAME", "RUSTORE_APP_ID")
+_missing = [name for name in _REQUIRED if not os.environ.get(name)]
+if _missing:
+    raise SystemExit(f"Не заданы обязательные переменные окружения: {', '.join(_missing)}")
+
 KEY_ID = os.environ["RUSTORE_KEY_ID"]
 PRIVATE_KEY_B64 = os.environ["RUSTORE_PRIVATE_KEY"]
 PACKAGE_NAME = os.environ["RUSTORE_PACKAGE_NAME"]
@@ -56,15 +61,3 @@ MATRIX_ROOM_ID = os.environ.get("MATRIX_ROOM_ID")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL") or "300")
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET") or "3")
 LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=TZ_OFFSET))
-
-# ── включённые каналы уведомлений ──
-
-TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
-MATRIX_ENABLED = bool(MATRIX_HOMESERVER and MATRIX_ACCESS_TOKEN and MATRIX_ROOM_ID)
-
-if not (TELEGRAM_ENABLED or MATRIX_ENABLED):
-    raise SystemExit(
-        "Не настроен ни один канал уведомлений. Задайте Telegram "
-        "(TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID) и/или Matrix "
-        "(MATRIX_HOMESERVER + MATRIX_ACCESS_TOKEN + MATRIX_ROOM_ID)."
-    )

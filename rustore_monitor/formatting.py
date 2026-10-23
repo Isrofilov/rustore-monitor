@@ -1,7 +1,9 @@
 """Форматирование HTML-сообщений для уведомлений."""
 
 import html
+import datetime
 
+from . import config
 from .rustore import resolve_product_name
 
 RATING_NAMES = {
@@ -11,6 +13,9 @@ RATING_NAMES = {
     "amountTwo": 2,
     "amountOne": 1,
 }
+
+# длинные отзывы обрезаем, чтобы сообщение влезло в лимит Telegram (4096 символов)
+MAX_REVIEW_LEN = 1500
 
 
 def calculate_avg(ratings: dict) -> float:
@@ -55,33 +60,48 @@ def format_stats(rating: dict) -> str:
     )
 
 
-def format_new_review(review: dict, rating: dict) -> str:
-    stars = "⭐" * review["appRating"]
+def _review_text(text: str | None) -> str:
+    text = text or ""
+    if len(text) > MAX_REVIEW_LEN:
+        text = text[:MAX_REVIEW_LEN].rstrip() + "…"
+    return html.escape(text)
+
+
+def _review_author(review: dict) -> str:
     user = html.escape(review.get("userName") or "—")
-    text = html.escape(review.get("commentText") or "")
     version_raw = review.get("appVersionName")
     version = f"  •  v{html.escape(version_raw)}" if version_raw else ""
+    return f"{user}{version}"
+
+
+def format_new_review(review: dict, rating: dict) -> str:
+    stars = "⭐" * review["appRating"]
     edited = "  (ред.)" if review.get("edited") else ""
     return (
         f"📝 <b>Новый отзыв в RuStore</b>\n\n"
-        f"{stars}  •  {user}{version}{edited}\n"
-        f"«{text}»\n\n"
+        f"{stars}  •  {_review_author(review)}{edited}\n"
+        f"«{_review_text(review.get('commentText'))}»\n\n"
         f"{format_stats(rating)}"
     )
 
 
-def format_edited_review(review: dict, rating: dict) -> str:
-    stars = "⭐" * review["appRating"]
-    user = html.escape(review.get("userName") or "—")
-    text = html.escape(review.get("commentText") or "")
-    version_raw = review.get("appVersionName")
-    version = f"  •  v{html.escape(version_raw)}" if version_raw else ""
-    return (
-        f"✏️ <b>Отзыв изменён</b>\n\n"
-        f"{stars}  •  {user}{version}\n"
-        f"«{text}»\n\n"
-        f"{format_stats(rating)}"
-    )
+def format_edited_review(review: dict, old_rating: int, old_text: str, rating: dict) -> str:
+    new_rating = review["appRating"]
+    new_text = review.get("commentText") or ""
+    lines = ["✏️ <b>Отзыв изменён</b>", "", _review_author(review)]
+
+    if old_rating != new_rating:
+        lines.append(f"Оценка: {'⭐' * old_rating} → {'⭐' * new_rating}")
+    else:
+        lines.append("⭐" * new_rating)
+
+    if old_text != new_text:
+        lines.append(f"Было: «{_review_text(old_text)}»")
+        lines.append(f"Стало: «{_review_text(new_text)}»")
+    else:
+        lines.append(f"«{_review_text(new_text)}»")
+
+    return "\n".join(lines) + f"\n\n{format_stats(rating)}"
 
 
 def format_silent_ratings(changes: dict[int, int], rating: dict) -> str:
@@ -96,6 +116,36 @@ def format_silent_ratings(changes: dict[int, int], rating: dict) -> str:
         f"⭐ <b>Новая оценка:</b> {changes_str}\n\n"
         f"{format_stats(rating)}"
     )
+
+
+# ── платежи ──
+
+
+def format_datetime(value: str | int | None) -> str:
+    """ISO-строку или миллисекунды с эпохи → «ДД.ММ.ГГГГ ЧЧ:ММ» в локальном часовом поясе."""
+    if value in (None, ""):
+        return ""
+    try:
+        if isinstance(value, int) or str(value).isdigit():
+            dt = datetime.datetime.fromtimestamp(int(value) / 1000, datetime.timezone.utc)
+        else:
+            dt = datetime.datetime.fromisoformat(str(value))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return str(value)
+    return dt.astimezone(config.LOCAL_TZ).strftime("%d.%m.%Y %H:%M")
+
+
+def format_amount(minor_units: int | float, currency: str = "RUB") -> str:
+    """Сумма в копейках → «1 299,90 ₽» (копейки — только если они есть)."""
+    minor = int(minor_units or 0)
+    sign = "-" if minor < 0 else ""
+    major, cents = divmod(abs(minor), 100)
+    major_str = f"{major:,}".replace(",", " ")
+    amount = f"{sign}{major_str},{cents:02d}" if cents else f"{sign}{major_str}"
+    symbol = "₽" if currency == "RUB" else html.escape(currency or "")
+    return f"{amount} {symbol}".strip()
 
 
 def format_payment_method(payment: dict) -> str:
@@ -127,17 +177,13 @@ def format_payment_method(payment: dict) -> str:
 
 def format_new_invoice(inv: dict, products_map: dict) -> str:
     order = inv.get("order", {})
-    payment = inv.get("paymentInfo", {})
+    payment = inv.get("paymentInfo") or {}
 
-    amount = order.get("amountCurrent", 0) // 100
-    currency = order.get("currency", "RUB")
-    if currency == "RUB":
-        currency = "₽"
-
+    amount = format_amount(order.get("amountCurrent", 0), order.get("currency", "RUB"))
     visual_name = html.escape(order.get("visualName") or "—")
     name = html.escape(resolve_product_name(order, products_map))
 
-    pay_date = html.escape(payment.get("paymentDate") or inv.get("invoiceDate") or "")
+    pay_date = html.escape(format_datetime(payment.get("paymentDate") or inv.get("invoiceDate")))
     method = html.escape(format_payment_method(payment))
 
     lines = [
@@ -145,10 +191,10 @@ def format_new_invoice(inv: dict, products_map: dict) -> str:
         "",
         f"<b>{visual_name}</b>",
         f"<b>Продукт:</b> {name}",
-        f"<b>Сумма:</b> {amount} {currency}",
-        "",
-        f"<b>Дата:</b> {pay_date}",
+        f"<b>Сумма:</b> {amount}",
     ]
+
+    lines += ["", f"<b>Дата:</b> {pay_date}"]
 
     if method:
         lines.append(f"<b>Способ оплаты:</b> {method}")
