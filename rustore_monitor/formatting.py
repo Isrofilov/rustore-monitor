@@ -175,7 +175,33 @@ def format_payment_method(payment: dict) -> str:
     return " ".join(parts)
 
 
-def format_new_invoice(inv: dict, products_map: dict) -> str:
+def _subscription_lines(sub: dict) -> list[str]:
+    """Строки с данными подписки (v5) для уведомления о платеже."""
+    lines = []
+
+    # orderId вида "3352..N" — счетов по подписке больше одного, N считается с 0
+    order_id = str(sub.get("orderId") or "")
+    if ".." in order_id:
+        number = order_id.rsplit("..", 1)[1]
+        if number.isdigit():
+            lines.append(f"<b>Подписка:</b> продление, платёж №{int(number) + 1}")
+    elif order_id:
+        lines.append("<b>Подписка:</b> первая оплата")
+
+    if sub.get("paymentState") == 2:
+        lines.append("<b>Пробный период</b>")
+
+    expiry = format_datetime(sub.get("expiryTimeMillis"))
+    if expiry:
+        lines.append(f"<b>Действует до:</b> {expiry}")
+
+    if sub.get("autoRenewing") is False:
+        lines.append("<b>Автопродление:</b> отключено")
+
+    return lines
+
+
+def format_new_invoice(inv: dict, products_map: dict, subscription: dict | None = None) -> str:
     order = inv.get("order", {})
     payment = inv.get("paymentInfo") or {}
 
@@ -193,6 +219,9 @@ def format_new_invoice(inv: dict, products_map: dict) -> str:
         f"<b>Продукт:</b> {name}",
         f"<b>Сумма:</b> {amount}",
     ]
+
+    if subscription:
+        lines += _subscription_lines(subscription)
 
     lines += ["", f"<b>Дата:</b> {pay_date}"]
 

@@ -99,6 +99,20 @@ def check_reviews(conn) -> CheckResult:
 REFUND_STATUSES = {"REFUNDED", "REVERSED"}
 
 
+def _fetch_subscription_info(inv: dict) -> dict | None:
+    """Данные подписки для платежа — если это подписка и метод доступен."""
+    item_code = (inv.get("order") or {}).get("itemCode")
+    purchase_id = inv.get("purchaseId")
+    if not (config.CHECK_SUBSCRIPTIONS and purchase_id and rustore.is_subscription(item_code)):
+        return None
+    try:
+        return rustore.fetch_subscription(item_code, purchase_id)
+    except Exception as e:
+        # метод работает только для подписок через Pay SDK — это не повод терять платёж
+        log.warning("Не удалось получить данные подписки %s: %s", purchase_id, e)
+        return None
+
+
 def check_payments(conn) -> CheckResult:
     """Новые платежи и возвраты за последние PAYMENTS_LOOKBACK_DAYS дней.
 
@@ -128,7 +142,7 @@ def check_payments(conn) -> CheckResult:
             prev = old_statuses.get(inv["invoiceId"])
             if status == "CONFIRMED" and prev is None:
                 products_map = products_map or rustore.all_products_map()
-                messages.append(formatting.format_new_invoice(inv, products_map))
+                messages.append(formatting.format_new_invoice(inv, products_map, _fetch_subscription_info(inv)))
                 new_count += 1
             elif status in REFUND_STATUSES and prev not in REFUND_STATUSES:
                 products_map = products_map or rustore.all_products_map()

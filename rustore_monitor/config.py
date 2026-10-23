@@ -18,6 +18,7 @@
     POLL_INTERVAL        — интервал опроса в секундах (по умолчанию 300)
     TZ_OFFSET            — смещение часового пояса в часах (по умолчанию +3, МСК)
     PAYMENTS_LOOKBACK_DAYS — за сколько последних дней проверять платежи и возвраты (по умолчанию 7)
+    CHECK_SUBSCRIPTIONS  — дополнять платежи по подпискам данными подписки (по умолчанию 1)
 """
 
 import os
@@ -29,6 +30,8 @@ from pathlib import Path
 RUSTORE_AUTH_URL = "https://public-api.rustore.ru/public/auth"
 RUSTORE_API_BASE = "https://public-api.rustore.ru/public/v1/application"
 RUSTORE_PAYMENTS_BASE = "https://public-api.rustore.ru/public/applications"
+
+RUSTORE_PUBLIC_BASE = "https://public-api.rustore.ru/public"
 
 DB_FILE = Path("/data/state.db")  # база состояния внутри Docker-тома
 
@@ -63,3 +66,13 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL") or "300")
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET") or "3")
 LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=TZ_OFFSET))
 PAYMENTS_LOOKBACK_DAYS = max(1, int(os.environ.get("PAYMENTS_LOOKBACK_DAYS") or "7"))
+
+
+def _flag(name: str, default: bool = True) -> bool:
+    value = os.environ.get(name)
+    if not value:
+        return default
+    return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+CHECK_SUBSCRIPTIONS = _flag("CHECK_SUBSCRIPTIONS")

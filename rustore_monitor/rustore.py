@@ -146,6 +146,7 @@ def fetch_subscriptions() -> list[dict]:
 
 
 _products_cache: dict[str, str] = {}
+_subscription_ids: set[str] = set()
 
 
 def all_products_map() -> dict[str, str]:
@@ -157,13 +158,23 @@ def all_products_map() -> dict[str, str]:
 
 def _refresh_products_cache():
     """Перезагружает словарь продуктов и подписок из API."""
-    global _products_cache
-    items = fetch_products() + fetch_subscriptions()
+    global _products_cache, _subscription_ids
+    products = fetch_products()
+    subscriptions = fetch_subscriptions()
     _products_cache = {
         item["productId"]: item["name"]
-        for item in items
+        for item in products + subscriptions
     }
+    _subscription_ids = {item["productId"] for item in subscriptions}
     log.info("Кеш продуктов обновлён, %d записей", len(_products_cache))
+
+
+def is_subscription(item_code: str | None) -> bool:
+    """Является ли продукт подпиской (по каталогу подписок)."""
+    if not item_code:
+        return False
+    all_products_map()
+    return item_code in _subscription_ids
 
 
 def resolve_product_name(order: dict, products_map: dict) -> str:
@@ -200,3 +211,12 @@ def fetch_invoices(date: str) -> list[dict]:
         page += 1
         if page >= (body.get("totalPages") or 0):
             return invoices
+
+
+def fetch_subscription(subscription_id: str, purchase_id: str) -> dict:
+    """Получает данные подписки пользователя (v5, только для подписок через Pay SDK)."""
+    return _rustore_get(
+        f"{config.RUSTORE_PUBLIC_BASE}/v5/subscription/"
+        f"{config.PACKAGE_NAME}/{subscription_id}/{purchase_id}",
+        "получения данных подписки",
+    )
