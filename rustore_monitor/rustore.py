@@ -178,11 +178,25 @@ def resolve_product_name(order: dict, products_map: dict) -> str:
     return _products_cache.get(code) or order.get("visualName") or "—"
 
 
+INVOICE_STATUSES = ("confirmed", "refunded", "reversed")
+
+
 def fetch_invoices(date: str) -> list[dict]:
-    """Получает подтверждённые платежи за указанную дату."""
-    body = _rustore_get(
-        f"{config.RUSTORE_PAYMENTS_BASE}/{config.APP_ID}/invoices",
-        "получения платежей",
-        params={"invoiceStatuses": "confirmed", "invoiceDate": date},
-    )
-    return body.get("content", [])
+    """Получает успешные и возвращённые платежи, созданные в указанную дату (все страницы)."""
+    invoices: list[dict] = []
+    page = 0
+    while True:
+        body = _rustore_get(
+            f"{config.RUSTORE_PAYMENTS_BASE}/{config.APP_ID}/invoices",
+            "получения платежей",
+            params={
+                "invoiceStatuses": INVOICE_STATUSES,
+                "invoiceDate": date,
+                "pageNumber": page,
+                "pageSize": 500,
+            },
+        )
+        invoices.extend(body.get("content") or [])
+        page += 1
+        if page >= (body.get("totalPages") or 0):
+            return invoices

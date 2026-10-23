@@ -39,6 +39,8 @@ def get_db() -> sqlite3.Connection:
     # У строк из старой схемы они NULL: такие отзывы просто заполняются без уведомления.
     _add_column(conn, "reviews", "rating", "INTEGER")
     _add_column(conn, "reviews", "text", "TEXT")
+    # раньше хранились только подтверждённые платежи
+    _add_column(conn, "invoices", "status", "TEXT NOT NULL DEFAULT 'CONFIRMED'")
     conn.commit()
     return conn
 
@@ -80,17 +82,22 @@ def save_ratings(conn: sqlite3.Connection, ratings: dict):
 # ── платежи ──
 
 
-def load_invoice_ids(conn: sqlite3.Connection, today: str) -> set[int]:
-    return {row[0] for row in conn.execute(
-        "SELECT invoice_id FROM invoices WHERE invoice_date = ?", (today,)
-    )}
+def load_invoice_statuses(conn: sqlite3.Connection) -> dict[int, str]:
+    """invoiceId → последний известный статус (в верхнем регистре)."""
+    return {row[0]: row[1] for row in conn.execute("SELECT invoice_id, status FROM invoices")}
 
 
-def save_invoices(conn: sqlite3.Connection, invoice_ids: set[int], today: str):
+def save_invoices(conn: sqlite3.Connection, invoices: list[tuple[int, str, str]]):
+    """Сохраняет платежи как (invoiceId, дата запроса, статус)."""
     conn.executemany(
-        "INSERT OR IGNORE INTO invoices (invoice_id, invoice_date) VALUES (?, ?)",
-        [(iid, today) for iid in invoice_ids],
+        "INSERT OR REPLACE INTO invoices (invoice_id, invoice_date, status) VALUES (?, ?, ?)",
+        invoices,
     )
+
+
+def delete_invoices_before(conn: sqlite3.Connection, date: str):
+    """Удаляет платежи, вышедшие за окно проверки."""
+    conn.execute("DELETE FROM invoices WHERE invoice_date < ?", (date,))
 
 
 # ── meta ──

@@ -200,3 +200,24 @@ def format_new_invoice(inv: dict, products_map: dict) -> str:
         lines.append(f"<b>Способ оплаты:</b> {method}")
 
     return "\n".join(lines)
+
+
+def format_refund(inv: dict, products_map: dict) -> str:
+    order = inv.get("order", {})
+    status = (inv.get("invoiceStatus") or "").upper()
+
+    title = "↩️ <b>Возврат средств</b>" if status == "REFUNDED" else "↩️ <b>Холд отменён, деньги возвращены</b>"
+    amount = format_amount(order.get("amountCurrent", 0), order.get("currency", "RUB"))
+    name = html.escape(resolve_product_name(order, products_map))
+
+    lines = [
+        title,
+        "",
+        f"<b>Продукт:</b> {name}",
+        f"<b>Сумма:</b> {amount}",
+        f"<b>Счёт:</b> №{inv.get('invoiceId')} от {html.escape(format_datetime(inv.get('invoiceDate')))}",
+    ]
+    refund_date = format_datetime(inv.get("refundDate"))
+    if refund_date:
+        lines.append(f"<b>Дата возврата:</b> {html.escape(refund_date)}")
+    return "\n".join(lines)

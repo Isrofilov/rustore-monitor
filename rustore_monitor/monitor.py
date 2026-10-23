@@ -96,29 +96,57 @@ def check_reviews(conn) -> CheckResult:
     return messages, save
 
 
+REFUND_STATUSES = {"REFUNDED", "REVERSED"}
+
+
 def check_payments(conn) -> CheckResult:
-    """Новые подтверждённые платежи за сегодня."""
-    today = datetime.datetime.now(config.LOCAL_TZ).strftime("%Y-%m-%d")
+    """Новые платежи и возвраты за последние PAYMENTS_LOOKBACK_DAYS дней.
 
-    invoices = rustore.fetch_invoices(today)
-    old_invoice_ids = state.load_invoice_ids(conn, today)
-    new_invoices = [inv for inv in invoices if inv["invoiceId"] not in old_invoice_ids]
-    is_first_run = state.get_meta(conn, "payments_initialized") is None
+    Окно в несколько дней нужно, потому что API фильтрует по дате *создания*
+    счёта: платёж, созданный перед полуночью, и возврат по старому платежу
+    иначе не попали бы в выборку за сегодня.
+    """
+    today = datetime.datetime.now(config.LOCAL_TZ).date()
+    dates = [(today - datetime.timedelta(days=i)).isoformat() for i in range(config.PAYMENTS_LOOKBACK_DAYS)]
 
-    log.info(
-        "Payments: total=%d, old=%d, new=%d, first_run=%s",
-        len(invoices), len(old_invoice_ids), len(new_invoices), is_first_run,
-    )
+    invoices: dict[int, tuple[str, dict]] = {}
+    for date in dates:
+        for inv in rustore.fetch_invoices(date):
+            invoices[inv["invoiceId"]] = (date, inv)
+
+    old_statuses = state.load_invoice_statuses(conn)
+    # v2: хранятся статусы и окно в несколько дней. Со старой схемы стартуем
+    # заново — без уведомлений, иначе пришли бы платежи за прошлые дни.
+    is_first_run = state.get_meta(conn, "payments_v2_initialized") is None
 
     messages: list[str] = []
-    # отправляем ТОЛЬКО если это не первый запуск
-    if not is_first_run and new_invoices:
-        products_map = rustore.all_products_map()
-        messages = [formatting.format_new_invoice(inv, products_map) for inv in new_invoices]
+    new_count = refund_count = 0
+    if not is_first_run:
+        products_map = None
+        for date, inv in invoices.values():
+            status = (inv.get("invoiceStatus") or "").upper()
+            prev = old_statuses.get(inv["invoiceId"])
+            if status == "CONFIRMED" and prev is None:
+                products_map = products_map or rustore.all_products_map()
+                messages.append(formatting.format_new_invoice(inv, products_map))
+                new_count += 1
+            elif status in REFUND_STATUSES and prev not in REFUND_STATUSES:
+                products_map = products_map or rustore.all_products_map()
+                messages.append(formatting.format_refund(inv, products_map))
+                refund_count += 1
+
+    log.info(
+        "Payments: days=%d, total=%d, new=%d, refunds=%d, first_run=%s",
+        len(dates), len(invoices), new_count, refund_count, is_first_run,
+    )
 
     def save():
-        state.save_invoices(conn, {inv["invoiceId"] for inv in invoices}, today)
-        state.save_meta(conn, payments_initialized="1")
+        state.save_invoices(conn, [
+            (invoice_id, date, (inv.get("invoiceStatus") or "").upper())
+            for invoice_id, (date, inv) in invoices.items()
+        ])
+        state.delete_invoices_before(conn, dates[-1])
+        state.save_meta(conn, payments_v2_initialized="1")
 
     return messages, save
 

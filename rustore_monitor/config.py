@@ -17,6 +17,7 @@
     MATRIX_ROOM_ID       — id комнаты для уведомлений (для включения Matrix)
     POLL_INTERVAL        — интервал опроса в секундах (по умолчанию 300)
     TZ_OFFSET            — смещение часового пояса в часах (по умолчанию +3, МСК)
+    PAYMENTS_LOOKBACK_DAYS — за сколько последних дней проверять платежи и возвраты (по умолчанию 7)
 """
 
 import os
@@ -61,3 +62,4 @@ MATRIX_ROOM_ID = os.environ.get("MATRIX_ROOM_ID")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL") or "300")
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET") or "3")
 LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=TZ_OFFSET))
+PAYMENTS_LOOKBACK_DAYS = max(1, int(os.environ.get("PAYMENTS_LOOKBACK_DAYS") or "7"))
