@@ -21,6 +21,10 @@
     CHECK_VERSIONS       — отслеживать статусы версий (по умолчанию 1)
     CHECK_ACCESS         — отслеживать выданные доступы (по умолчанию 1)
     CHECK_SUBSCRIPTIONS  — дополнять платежи по подпискам данными подписки (по умолчанию 1)
+    DIGEST_DAILY         — ежедневная сводка за вчера (по умолчанию 0)
+    DIGEST_WEEKLY        — еженедельная сводка за 7 дней (по умолчанию 0)
+    DIGEST_WEEKLY_DAY    — день недели еженедельной сводки, 1 — понедельник … 7 — воскресенье (по умолчанию 1)
+    DIGEST_TIME          — время отправки сводок ЧЧ:ММ в TZ_OFFSET (по умолчанию 09:00)
 """
 
 import os
@@ -80,3 +84,27 @@ def _flag(name: str, default: bool = True) -> bool:
 CHECK_VERSIONS = _flag("CHECK_VERSIONS")
 CHECK_ACCESS = _flag("CHECK_ACCESS")
 CHECK_SUBSCRIPTIONS = _flag("CHECK_SUBSCRIPTIONS")
+
+# ── сводки ──
+
+DIGEST_DAILY = _flag("DIGEST_DAILY", default=False)
+DIGEST_WEEKLY = _flag("DIGEST_WEEKLY", default=False)
+DIGEST_WEEKLY_DAY = int(os.environ.get("DIGEST_WEEKLY_DAY") or "1")
+if not 1 <= DIGEST_WEEKLY_DAY <= 7:
+    raise SystemExit("DIGEST_WEEKLY_DAY должен быть от 1 (понедельник) до 7 (воскресенье)")
+try:
+    DIGEST_TIME = datetime.time.fromisoformat(os.environ.get("DIGEST_TIME") or "09:00")
+except ValueError:
+    raise SystemExit("DIGEST_TIME должен быть в формате ЧЧ:ММ, например 09:00")
+
+# ── включённые каналы уведомлений ──
+
+TELEGRAM_ENABLED = bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
+MATRIX_ENABLED = bool(MATRIX_HOMESERVER and MATRIX_ACCESS_TOKEN and MATRIX_ROOM_ID)
+
+if not (TELEGRAM_ENABLED or MATRIX_ENABLED):
+    raise SystemExit(
+        "Не настроен ни один канал уведомлений. Задайте Telegram "
+        "(TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID) и/или Matrix "
+        "(MATRIX_HOMESERVER + MATRIX_ACCESS_TOKEN + MATRIX_ROOM_ID)."
+    )

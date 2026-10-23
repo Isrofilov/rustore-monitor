@@ -10,6 +10,7 @@
 import sys
 import time
 import logging
+import json
 import datetime
 from typing import Callable
 
@@ -224,12 +225,99 @@ def check_access(conn) -> CheckResult:
     return messages, save
 
 
+def _parse_local_date(value: str | None) -> datetime.date | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=config.LOCAL_TZ)
+    return dt.astimezone(config.LOCAL_TZ).date()
+
+
+def _collect_digest(conn, days: list[datetime.date], snapshot_key: str) -> tuple[dict, dict]:
+    """Собирает данные для сводки за указанные дни. Возвращает (данные, новый снимок)."""
+    period = set(days)
+    data: dict = {}
+
+    # платежи — по дате создания счёта; возвраты среди них считаем отдельно
+    paid = refunded = 0
+    paid_sum = refunded_sum = 0
+    currency = "RUB"
+    for day in days:
+        for inv in rustore.fetch_invoices(day.isoformat()):
+            order = inv.get("order") or {}
+            amount = order.get("amountCurrent") or 0
+            currency = order.get("currency") or currency
+            paid += 1
+            paid_sum += amount
+            if (inv.get("invoiceStatus") or "").upper() in REFUND_STATUSES:
+                refunded += 1
+                refunded_sum += amount
+    data["payments"] = (paid, paid_sum, refunded, refunded_sum, currency)
+
+    # отзывы — из последних 100, по дате отзыва
+    by_star: dict[int, int] = {}
+    for review in rustore.fetch_reviews():
+        if _parse_local_date(review.get("commentDate")) in period:
+            by_star[review["appRating"]] = by_star.get(review["appRating"], 0) + 1
+    data["reviews"] = by_star
+
+    # рейтинг — сравниваем со снимком на момент прошлой такой же сводки
+    rating = rustore.fetch_rating()
+    data["rating"] = rating
+    prev = state.get_meta(conn, snapshot_key)
+    data["prev_rating"] = json.loads(prev) if prev else None
+    snapshot = {"total": rating["totalRatings"], "average": rating["averageUserRating"]}
+
+    if config.CHECK_VERSIONS:
+        try:
+            active = [v for v in rustore.fetch_versions() if v.get("versionStatus") in ("ACTIVE", "PARTIAL_ACTIVE")]
+            data["active_versions"] = active
+        except Exception as e:
+            log.warning("Сводка: не удалось получить версии: %s", e)
+
+    return data, snapshot
+
+
+def _digest_check(kind: str) -> Callable:
+    """Строит проверку сводки: kind — "daily" (за вчера) или "weekly" (за 7 дней до вчера)."""
+    sent_key = f"digest_{kind}_sent"
+    snapshot_key = f"digest_{kind}_snapshot"
+
+    def check(conn) -> CheckResult:
+        now = datetime.datetime.now(config.LOCAL_TZ)
+        today = now.date()
+        due = now.time() >= config.DIGEST_TIME and state.get_meta(conn, sent_key) != today.isoformat()
+        if kind == "weekly":
+            due = due and today.isoweekday() == config.DIGEST_WEEKLY_DAY
+        if not due:
+            return [], lambda: None
+
+        length = 7 if kind == "weekly" else 1
+        days = [today - datetime.timedelta(days=i) for i in range(length, 0, -1)]
+        data, snapshot = _collect_digest(conn, days, snapshot_key)
+
+        def save():
+            state.save_meta(conn, **{sent_key: today.isoformat(), snapshot_key: json.dumps(snapshot)})
+
+        return [formatting.format_digest(kind, days, data)], save
+
+    return check
+
+
 def _enabled_checks() -> list[tuple[str, Callable]]:
     checks: list[tuple[str, Callable]] = [("отзывы", check_reviews), ("платежи", check_payments)]
     if config.CHECK_VERSIONS:
         checks.append(("версии", check_versions))
     if config.CHECK_ACCESS:
         checks.append(("доступы", check_access))
+    if config.DIGEST_DAILY:
+        checks.append(("ежедневная сводка", _digest_check("daily")))
+    if config.DIGEST_WEEKLY:
+        checks.append(("еженедельная сводка", _digest_check("weekly")))
     return checks
 
 

@@ -348,3 +348,55 @@ def format_access_changes(
         else:
             lines.append(f"➖ {who}: {_roles(minus)}")
     return "\n".join(lines)
+
+
+# ── сводки ──
+
+
+def format_digest(kind: str, days: list[datetime.date], data: dict) -> str:
+    if kind == "weekly":
+        title = "🗓 <b>Сводка за неделю</b>"
+        period = f"{days[0]:%d.%m} — {days[-1]:%d.%m.%Y}"
+    else:
+        title = "🗓 <b>Сводка за день</b>"
+        period = f"{days[0]:%d.%m.%Y}"
+
+    lines = [title, period, ""]
+
+    paid, paid_sum, refunded, refunded_sum, currency = data["payments"]
+    lines.append(f"💰 <b>Платежей:</b> {paid} на {format_amount(paid_sum, currency)}")
+    if refunded:
+        lines.append(
+            f"↩️ <b>Из них возвращено:</b> {refunded} на {format_amount(refunded_sum, currency)}"
+            f"  •  итого {format_amount(paid_sum - refunded_sum, currency)}"
+        )
+
+    reviews = data["reviews"]
+    total_reviews = sum(reviews.values())
+    if total_reviews:
+        by_star = "  ".join(f"⭐{star} — {reviews[star]}" for star in sorted(reviews, reverse=True))
+        lines.append(f"📝 <b>Отзывов:</b> {total_reviews}  ({by_star})")
+    else:
+        lines.append("📝 <b>Отзывов:</b> 0")
+
+    rating = data["rating"]
+    prev = data.get("prev_rating")
+    if prev:
+        new_ratings = rating["totalRatings"] - prev["total"]
+        avg_delta = rating["averageUserRating"] - prev["average"]
+        lines.append(
+            f"⭐ <b>Новых оценок:</b> {new_ratings:+d}  •  средняя "
+            f"{prev['average']:.2f} → {rating['averageUserRating']:.2f} ({avg_delta:+.2f})"
+        )
+
+    for version in data.get("active_versions") or []:
+        name = html.escape(str(version.get("versionName") or "?"))
+        partial = (
+            f", {version['partialValue']}% пользователей"
+            if version.get("versionStatus") == "PARTIAL_ACTIVE" else ""
+        )
+        alpha = ", альфа" if (version.get("testingType") or "").lower() == "alpha" else ""
+        lines.append(f"📦 <b>Опубликована:</b> {name} ({version.get('versionCode')}{partial}{alpha})")
+
+    lines += ["", format_stats(rating)]
+    return "\n".join(lines)
