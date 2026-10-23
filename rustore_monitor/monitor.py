@@ -38,15 +38,15 @@ def _absorb(changes: dict[int, int], star: int, delta: int):
             del changes[star]
 
 
-def check_reviews(conn) -> CheckResult:
+def check_reviews(conn, app: config.App) -> CheckResult:
     """Новые и изменённые отзывы, «тихие» оценки без текста."""
     old_reviews = state.load_reviews(conn)
     old_ratings = state.load_ratings(conn)
     # пустой список отзывов у нового приложения — не повод считать каждый запуск первым
     is_first_run = not old_reviews and state.get_meta(conn, "reviews_initialized") is None
 
-    rating = rustore.fetch_rating()
-    reviews = rustore.fetch_reviews()
+    rating = rustore.fetch_rating(app)
+    reviews = rustore.fetch_reviews(app)
 
     new_reviews: list[dict] = []
     edited: list[tuple[dict, int, str]] = []
@@ -84,7 +84,7 @@ def check_reviews(conn) -> CheckResult:
 
     def save():
         if is_first_run:
-            log.info("Первый запуск — сохраняю начальное состояние (%d отзывов)", len(reviews))
+            log.info("%s: первый запуск — сохраняю начальное состояние (%d отзывов)", app.package, len(reviews))
         state.save_reviews(conn, reviews)
         state.save_ratings(conn, rating["ratings"])
         state.save_meta(
@@ -100,21 +100,21 @@ def check_reviews(conn) -> CheckResult:
 REFUND_STATUSES = {"REFUNDED", "REVERSED"}
 
 
-def _fetch_subscription_info(inv: dict) -> dict | None:
+def _fetch_subscription_info(app: config.App, inv: dict) -> dict | None:
     """Данные подписки для платежа — если это подписка и метод доступен."""
     item_code = (inv.get("order") or {}).get("itemCode")
     purchase_id = inv.get("purchaseId")
-    if not (config.CHECK_SUBSCRIPTIONS and purchase_id and rustore.is_subscription(item_code)):
+    if not (config.CHECK_SUBSCRIPTIONS and purchase_id and rustore.is_subscription(app, item_code)):
         return None
     try:
-        return rustore.fetch_subscription(item_code, purchase_id)
+        return rustore.fetch_subscription(app, item_code, purchase_id)
     except Exception as e:
         # метод работает только для подписок через Pay SDK — это не повод терять платёж
         log.warning("Не удалось получить данные подписки %s: %s", purchase_id, e)
         return None
 
 
-def check_payments(conn) -> CheckResult:
+def check_payments(conn, app: config.App) -> CheckResult:
     """Новые платежи и возвраты за последние PAYMENTS_LOOKBACK_DAYS дней.
 
     Окно в несколько дней нужно, потому что API фильтрует по дате *создания*
@@ -126,7 +126,7 @@ def check_payments(conn) -> CheckResult:
 
     invoices: dict[int, tuple[str, dict]] = {}
     for date in dates:
-        for inv in rustore.fetch_invoices(date):
+        for inv in rustore.fetch_invoices(app, date):
             invoices[inv["invoiceId"]] = (date, inv)
 
     old_statuses = state.load_invoice_statuses(conn)
@@ -137,22 +137,19 @@ def check_payments(conn) -> CheckResult:
     messages: list[str] = []
     new_count = refund_count = 0
     if not is_first_run:
-        products_map = None
         for date, inv in invoices.values():
             status = (inv.get("invoiceStatus") or "").upper()
             prev = old_statuses.get(inv["invoiceId"])
             if status == "CONFIRMED" and prev is None:
-                products_map = products_map or rustore.all_products_map()
-                messages.append(formatting.format_new_invoice(inv, products_map, _fetch_subscription_info(inv)))
+                messages.append(formatting.format_new_invoice(app, inv, _fetch_subscription_info(app, inv)))
                 new_count += 1
             elif status in REFUND_STATUSES and prev not in REFUND_STATUSES:
-                products_map = products_map or rustore.all_products_map()
-                messages.append(formatting.format_refund(inv, products_map))
+                messages.append(formatting.format_refund(app, inv))
                 refund_count += 1
 
     log.info(
-        "Payments: days=%d, total=%d, new=%d, refunds=%d, first_run=%s",
-        len(dates), len(invoices), new_count, refund_count, is_first_run,
+        "Payments %s: days=%d, total=%d, new=%d, refunds=%d, first_run=%s",
+        app.package, len(dates), len(invoices), new_count, refund_count, is_first_run,
     )
 
     def save():
@@ -171,12 +168,12 @@ def check_payments(conn) -> CheckResult:
 QUIET_VERSION_STATUSES = {"DRAFT", "DELETED_DRAFT", "PREVIOUS_ACTIVE"}
 
 
-def check_versions(conn) -> CheckResult:
+def check_versions(conn, app: config.App) -> CheckResult:
     """Смена статусов версий: модерация, одобрение, отклонение, публикация."""
     old_versions = state.load_versions(conn)
     is_first_run = state.get_meta(conn, "versions_initialized") is None
 
-    versions = rustore.fetch_versions()
+    versions = rustore.fetch_versions(app)
 
     messages: list[str] = []
     if not is_first_run:
@@ -196,13 +193,13 @@ def check_versions(conn) -> CheckResult:
     return messages, save
 
 
-def check_access(conn) -> CheckResult:
+def check_access(conn, app: config.App) -> CheckResult:
     """Выдача, отзыв и изменение доступов пользователей к приложению."""
     old = state.load_developers(conn)
     is_first_run = state.get_meta(conn, "access_initialized") is None
 
     current: dict[tuple[str, str], str] = {}
-    for dev in rustore.fetch_developers():
+    for dev in rustore.fetch_developers(app):
         name = " ".join(filter(None, (dev.get("firstName"), dev.get("lastName"))))
         current[(str(dev["devVkId"]), dev["role"])] = name
 
@@ -237,7 +234,7 @@ def _parse_local_date(value: str | None) -> datetime.date | None:
     return dt.astimezone(config.LOCAL_TZ).date()
 
 
-def _collect_digest(conn, days: list[datetime.date], snapshot_key: str) -> tuple[dict, dict]:
+def _collect_digest(conn, app: config.App, days: list[datetime.date], snapshot_key: str) -> tuple[dict, dict]:
     """Собирает данные для сводки за указанные дни. Возвращает (данные, новый снимок)."""
     period = set(days)
     data: dict = {}
@@ -247,7 +244,7 @@ def _collect_digest(conn, days: list[datetime.date], snapshot_key: str) -> tuple
     paid_sum = refunded_sum = 0
     currency = "RUB"
     for day in days:
-        for inv in rustore.fetch_invoices(day.isoformat()):
+        for inv in rustore.fetch_invoices(app, day.isoformat()):
             order = inv.get("order") or {}
             amount = order.get("amountCurrent") or 0
             currency = order.get("currency") or currency
@@ -260,13 +257,13 @@ def _collect_digest(conn, days: list[datetime.date], snapshot_key: str) -> tuple
 
     # отзывы — из последних 100, по дате отзыва
     by_star: dict[int, int] = {}
-    for review in rustore.fetch_reviews():
+    for review in rustore.fetch_reviews(app):
         if _parse_local_date(review.get("commentDate")) in period:
             by_star[review["appRating"]] = by_star.get(review["appRating"], 0) + 1
     data["reviews"] = by_star
 
     # рейтинг — сравниваем со снимком на момент прошлой такой же сводки
-    rating = rustore.fetch_rating()
+    rating = rustore.fetch_rating(app)
     data["rating"] = rating
     prev = state.get_meta(conn, snapshot_key)
     data["prev_rating"] = json.loads(prev) if prev else None
@@ -274,7 +271,7 @@ def _collect_digest(conn, days: list[datetime.date], snapshot_key: str) -> tuple
 
     if config.CHECK_VERSIONS:
         try:
-            active = [v for v in rustore.fetch_versions() if v.get("versionStatus") in ("ACTIVE", "PARTIAL_ACTIVE")]
+            active = [v for v in rustore.fetch_versions(app) if v.get("versionStatus") in ("ACTIVE", "PARTIAL_ACTIVE")]
             data["active_versions"] = active
         except Exception as e:
             log.warning("Сводка: не удалось получить версии: %s", e)
@@ -287,7 +284,7 @@ def _digest_check(kind: str) -> Callable:
     sent_key = f"digest_{kind}_sent"
     snapshot_key = f"digest_{kind}_snapshot"
 
-    def check(conn) -> CheckResult:
+    def check(conn, app: config.App) -> CheckResult:
         now = datetime.datetime.now(config.LOCAL_TZ)
         today = now.date()
         due = now.time() >= config.DIGEST_TIME and state.get_meta(conn, sent_key) != today.isoformat()
@@ -298,7 +295,7 @@ def _digest_check(kind: str) -> Callable:
 
         length = 7 if kind == "weekly" else 1
         days = [today - datetime.timedelta(days=i) for i in range(length, 0, -1)]
-        data, snapshot = _collect_digest(conn, days, snapshot_key)
+        data, snapshot = _collect_digest(conn, app, days, snapshot_key)
 
         def save():
             state.save_meta(conn, **{sent_key: today.isoformat(), snapshot_key: json.dumps(snapshot)})
@@ -321,28 +318,35 @@ def _enabled_checks() -> list[tuple[str, Callable]]:
     return checks
 
 
-def check_updates():
-    """Выполняет все включённые проверки и отправляет уведомления."""
-    conn = state.get_db()
+def check_app(app: config.App):
+    """Выполняет все включённые проверки одного приложения и отправляет уведомления."""
+    header = formatting.app_header(app) if len(config.APPS) > 1 else ""
+    conn = state.get_db(app)
     try:
         for name, check in _enabled_checks():
             try:
-                messages, save = check(conn)
+                messages, save = check(conn, app)
                 # При ошибке notify бросит исключение — состояние проверки НЕ будет
                 # сохранено, и на следующей итерации уведомления уйдут повторно.
                 for msg in messages:
-                    notify(msg)
+                    notify(header + msg)
                     time.sleep(1.0)
                 save()
                 conn.commit()
             except Exception:
                 conn.rollback()
-                log.exception("Ошибка при проверке: %s", name)
+                log.exception("Ошибка при проверке %s: %s", app.package, name)
 
         state.save_meta(conn, last_check=datetime.datetime.now(config.LOCAL_TZ).isoformat())
         conn.commit()
     finally:
         conn.close()
+
+
+def check_updates():
+    """Проверяет все приложения."""
+    for app in config.APPS:
+        check_app(app)
 
 
 def main():
@@ -352,10 +356,12 @@ def main():
     if config.MATRIX_ENABLED:
         channels.append("Matrix")
     log.info(
-        "RuStore monitor запущен, пакет=%s, интервал=%ds, каналы=%s, проверки=%s",
-        config.PACKAGE_NAME, config.POLL_INTERVAL, ", ".join(channels),
+        "RuStore monitor запущен, приложения=%s, интервал=%ds, каналы=%s, проверки=%s",
+        ", ".join(app.package for app in config.APPS), config.POLL_INTERVAL, ", ".join(channels),
         ", ".join(name for name, _ in _enabled_checks()),
     )
+
+    state.migrate_legacy_db()
 
     # проверяем подключение при старте
     try:

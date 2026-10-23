@@ -1,8 +1,12 @@
 """Хранение состояния в SQLite."""
 
+import os
+import logging
 import sqlite3
 
 from . import config
+
+log = logging.getLogger(__name__)
 
 
 def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str):
@@ -12,10 +16,33 @@ def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
-def get_db() -> sqlite3.Connection:
-    """Возвращает соединение с БД, создаёт таблицы при первом вызове."""
-    config.DB_FILE.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(config.DB_FILE))
+def migrate_legacy_db():
+    """Переносит базу из версий с одним приложением (state.db) в файл приложения.
+
+    Старая база принадлежит приложению из RUSTORE_PACKAGE_NAME, а если оно не
+    задано — единственному приложению в RUSTORE_APPS.
+    """
+    legacy = config.LEGACY_DB_FILE
+    if not legacy.exists():
+        return
+    owner = os.environ.get("RUSTORE_PACKAGE_NAME")
+    if not owner and len(config.APPS) == 1:
+        owner = config.APPS[0].package
+    app = next((a for a in config.APPS if a.package == owner), None)
+    if app is None or app.db_file.exists():
+        log.warning("Найдена старая база %s, но непонятно, к какому приложению она относится — пропускаю", legacy)
+        return
+    for suffix in ("", "-wal", "-shm"):
+        src = legacy.with_name(legacy.name + suffix)
+        if src.exists():
+            src.rename(app.db_file.with_name(app.db_file.name + suffix))
+    log.info("База %s перенесена в %s", legacy, app.db_file)
+
+
+def get_db(app: config.App) -> sqlite3.Connection:
+    """Возвращает соединение с БД приложения, создаёт таблицы при первом вызове."""
+    app.db_file.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(app.db_file))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS reviews (

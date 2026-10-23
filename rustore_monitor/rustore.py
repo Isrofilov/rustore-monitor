@@ -110,95 +110,92 @@ def _rustore_get(url: str, label: str, **kwargs) -> dict:
     return data["body"]
 
 
-def fetch_rating() -> dict:
+def fetch_rating(app: config.App) -> dict:
     """Получает статистику оценок приложения."""
     return _rustore_get(
-        f"{config.RUSTORE_API_BASE}/{config.PACKAGE_NAME}/comment/statistic",
+        f"{config.RUSTORE_API_BASE}/{app.package}/comment/statistic",
         "получения рейтинга",
     )
 
 
-def fetch_reviews(size: int = 100) -> list[dict]:
+def fetch_reviews(app: config.App, size: int = 100) -> list[dict]:
     """Получает список последних отзывов."""
     return _rustore_get(
-        f"{config.RUSTORE_API_BASE}/{config.PACKAGE_NAME}/comment",
+        f"{config.RUSTORE_API_BASE}/{app.package}/comment",
         "получения отзывов",
         params={"size": size},
     )
 
 
-def fetch_products() -> list[dict]:
+def fetch_products(app: config.App) -> list[dict]:
     """Получает список продуктов (разовые покупки)."""
     body = _rustore_get(
-        f"{config.RUSTORE_PAYMENTS_BASE}/{config.APP_ID}/catalog/products",
+        f"{config.RUSTORE_PAYMENTS_BASE}/{app.app_id}/catalog/products",
         "получения продуктов",
     )
     return body.get("elements", [])
 
 
-def fetch_subscriptions() -> list[dict]:
+def fetch_subscriptions(app: config.App) -> list[dict]:
     """Получает список подписок."""
     body = _rustore_get(
-        f"{config.RUSTORE_PAYMENTS_BASE}/{config.APP_ID}/catalog/subscriptions",
+        f"{config.RUSTORE_PAYMENTS_BASE}/{app.app_id}/catalog/subscriptions",
         "получения подписок",
     )
     return body.get("elements", [])
 
 
-_products_cache: dict[str, str] = {}
-_subscription_ids: set[str] = set()
+# appId → (productId → название, набор productId подписок)
+_catalogs: dict[str, tuple[dict[str, str], set[str]]] = {}
 
 
-def all_products_map() -> dict[str, str]:
+def all_products_map(app: config.App) -> dict[str, str]:
     """Возвращает кешированный словарь productId → name. Загружает при первом вызове."""
-    if not _products_cache:
-        _refresh_products_cache()
-    return _products_cache
+    if app.app_id not in _catalogs:
+        _refresh_products_cache(app)
+    return _catalogs[app.app_id][0]
 
 
-def _refresh_products_cache():
+def _refresh_products_cache(app: config.App):
     """Перезагружает словарь продуктов и подписок из API."""
-    global _products_cache, _subscription_ids
-    products = fetch_products()
-    subscriptions = fetch_subscriptions()
-    _products_cache = {
-        item["productId"]: item["name"]
-        for item in products + subscriptions
-    }
-    _subscription_ids = {item["productId"] for item in subscriptions}
-    log.info("Кеш продуктов обновлён, %d записей", len(_products_cache))
+    products = fetch_products(app)
+    subscriptions = fetch_subscriptions(app)
+    names = {item["productId"]: item["name"] for item in products + subscriptions}
+    _catalogs[app.app_id] = (names, {item["productId"] for item in subscriptions})
+    log.info("Кеш продуктов %s обновлён, %d записей", app.package, len(names))
 
 
-def is_subscription(item_code: str | None) -> bool:
+def is_subscription(app: config.App, item_code: str | None) -> bool:
     """Является ли продукт подпиской (по каталогу подписок)."""
     if not item_code:
         return False
-    all_products_map()
-    return item_code in _subscription_ids
+    all_products_map(app)
+    return item_code in _catalogs[app.app_id][1]
 
 
-def resolve_product_name(order: dict, products_map: dict) -> str:
+def resolve_product_name(app: config.App, order: dict) -> str:
     """Определяет название продукта по itemCode. При промахе кеша — перезагружает."""
     code = order.get("itemCode")
     if not code:
         return order.get("visualName") or "—"
+    products_map = all_products_map(app)
     if code in products_map:
         return products_map[code]
     # ключ не найден — перезагружаем кеш
-    _refresh_products_cache()
-    return _products_cache.get(code) or order.get("visualName") or "—"
+    _refresh_products_cache(app)
+    return _catalogs[app.app_id][0].get(code) or order.get("visualName") or "—"
 
 
 INVOICE_STATUSES = ("confirmed", "refunded", "reversed")
 
 
-def fetch_invoices(date: str) -> list[dict]:
+def fetch_invoices(app: config.App, date: str) -> list[dict]:
     """Получает успешные и возвращённые платежи, созданные в указанную дату (все страницы)."""
     invoices: list[dict] = []
     page = 0
     while True:
         body = _rustore_get(
-            f"{config.RUSTORE_PAYMENTS_BASE}/{config.APP_ID}/invoices",
+            f"{config.RUSTORE_PAYMENTS_BASE}/{app.app_id}/invoices",
             "получения платежей",
             params={
                 "invoiceStatuses": INVOICE_STATUSES,
@@ -213,32 +210,32 @@ def fetch_invoices(date: str) -> list[dict]:
             return invoices
 
 
-def fetch_subscription(subscription_id: str, purchase_id: str) -> dict:
+def fetch_subscription(app: config.App, subscription_id: str, purchase_id: str) -> dict:
     """Получает данные подписки пользователя (v5, только для подписок через Pay SDK)."""
     return _rustore_get(
         f"{config.RUSTORE_PUBLIC_BASE}/v5/subscription/"
-        f"{config.PACKAGE_NAME}/{subscription_id}/{purchase_id}",
+        f"{app.package}/{subscription_id}/{purchase_id}",
         "получения данных подписки",
     )
 
 
-def fetch_versions() -> list[dict]:
+def fetch_versions(app: config.App) -> list[dict]:
     """Получает последние версии приложения (релизные и альфа) со статусами."""
     body = _rustore_get(
-        f"{config.RUSTORE_API_BASE}/{config.PACKAGE_NAME}/version",
+        f"{config.RUSTORE_API_BASE}/{app.package}/version",
         "получения статусов версий",
         params={"filterTestingType": "ALL", "page": 0, "size": 100},
     )
     return body.get("content") or []
 
 
-def fetch_developers() -> list[dict]:
+def fetch_developers(app: config.App) -> list[dict]:
     """Получает всех пользователей с доступом к приложению и их роли (все страницы)."""
     developers: list[dict] = []
     params: dict = {"pageSize": 100}
     while True:
         body = _rustore_get(
-            f"{config.RUSTORE_API_BASE}/{config.PACKAGE_NAME}/developer",
+            f"{config.RUSTORE_API_BASE}/{app.package}/developer",
             "получения доступов",
             params=params,
         )

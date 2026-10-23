@@ -34,6 +34,11 @@ def calculate_avg(ratings: dict) -> float:
     return s / total
 
 
+def app_header(app: config.App) -> str:
+    """Заголовок с названием приложения — когда приложений несколько."""
+    return f"📱 <b>{html.escape(app.label)}</b>\n"
+
+
 def format_stats(rating: dict) -> str:
     r = rating["ratings"]
     api_avg = rating["averageUserRating"]
@@ -201,13 +206,13 @@ def _subscription_lines(sub: dict) -> list[str]:
     return lines
 
 
-def format_new_invoice(inv: dict, products_map: dict, subscription: dict | None = None) -> str:
+def format_new_invoice(app: config.App, inv: dict, subscription: dict | None = None) -> str:
     order = inv.get("order", {})
     payment = inv.get("paymentInfo") or {}
 
     amount = format_amount(order.get("amountCurrent", 0), order.get("currency", "RUB"))
     visual_name = html.escape(order.get("visualName") or "—")
-    name = html.escape(resolve_product_name(order, products_map))
+    name = html.escape(resolve_product_name(app, order))
 
     pay_date = html.escape(format_datetime(payment.get("paymentDate") or inv.get("invoiceDate")))
     method = html.escape(format_payment_method(payment))
@@ -231,13 +236,13 @@ def format_new_invoice(inv: dict, products_map: dict, subscription: dict | None 
     return "\n".join(lines)
 
 
-def format_refund(inv: dict, products_map: dict) -> str:
+def format_refund(app: config.App, inv: dict) -> str:
     order = inv.get("order", {})
     status = (inv.get("invoiceStatus") or "").upper()
 
     title = "↩️ <b>Возврат средств</b>" if status == "REFUNDED" else "↩️ <b>Холд отменён, деньги возвращены</b>"
     amount = format_amount(order.get("amountCurrent", 0), order.get("currency", "RUB"))
-    name = html.escape(resolve_product_name(order, products_map))
+    name = html.escape(resolve_product_name(app, order))
 
     lines = [
         title,
