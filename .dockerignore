@@ -5,3 +5,9 @@
 *.md
 docker-compose.yml
 __pycache__
+tests
+requirements-dev.txt
+ruff.toml
+.pytest_cache
+.ruff_cache
+pytest.ini

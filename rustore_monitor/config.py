@@ -6,8 +6,10 @@
 Переменные окружения:
     RUSTORE_KEY_ID       — id ключа API
     RUSTORE_PRIVATE_KEY  — приватный ключ в формате base64
-    RUSTORE_PACKAGE_NAME — имя пакета приложения (например, com.example.app)
-    RUSTORE_APP_ID       — числовой id приложения из консоли RuStore
+    RUSTORE_APPS         — список приложений через запятую: пакет:appId[:название],
+                           например «com.a.app:123456:Приложение A,com.b.app:654321»
+    RUSTORE_PACKAGE_NAME — имя пакета приложения — если приложение одно (вместо RUSTORE_APPS)
+    RUSTORE_APP_ID       — числовой id приложения из консоли RuStore (вместе с RUSTORE_PACKAGE_NAME)
     TELEGRAM_DOMAIN      — домен Telegram API (по умолчанию api.telegram.org)
     TELEGRAM_BOT_TOKEN   — токен Telegram-бота (для включения Telegram)
     TELEGRAM_CHAT_ID     — id чата для уведомлений (для включения Telegram)
@@ -17,10 +19,22 @@
     MATRIX_ROOM_ID       — id комнаты для уведомлений (для включения Matrix)
     POLL_INTERVAL        — интервал опроса в секундах (по умолчанию 300)
     TZ_OFFSET            — смещение часового пояса в часах (по умолчанию +3, МСК)
+    PAYMENTS_LOOKBACK_DAYS — за сколько последних дней проверять платежи и возвраты (по умолчанию 7)
+    CHECK_VERSIONS       — отслеживать статусы версий (по умолчанию 1)
+    CHECK_ACCESS         — отслеживать выданные доступы (по умолчанию 1)
+    CHECK_SUBSCRIPTIONS  — дополнять платежи по подпискам данными подписки (по умолчанию 1)
+    DIGEST_DAILY         — ежедневная сводка за вчера (по умолчанию 0)
+    DIGEST_WEEKLY        — еженедельная сводка за 7 дней (по умолчанию 0)
+    DIGEST_WEEKLY_DAY    — день недели еженедельной сводки, 1 — понедельник … 7 — воскресенье (по умолчанию 1)
+    DIGEST_TIME          — время отправки сводок ЧЧ:ММ в TZ_OFFSET (по умолчанию 09:00)
+    ALERT_AFTER_FAILURES — после скольких подряд упавших проверок слать предупреждение (по умолчанию 3, 0 — выкл.)
+    DATA_DIR             — каталог для базы состояния (по умолчанию /data)
 """
 
 import os
+import re
 import datetime
+from dataclasses import dataclass
 from pathlib import Path
 
 # ── эндпоинты RuStore ──
@@ -29,14 +43,56 @@ RUSTORE_AUTH_URL = "https://public-api.rustore.ru/public/auth"
 RUSTORE_API_BASE = "https://public-api.rustore.ru/public/v1/application"
 RUSTORE_PAYMENTS_BASE = "https://public-api.rustore.ru/public/applications"
 
-DB_FILE = Path("/data/state.db")  # база состояния внутри Docker-тома
+RUSTORE_PUBLIC_BASE = "https://public-api.rustore.ru/public"
 
 # ── RuStore ──
 
+_missing = [name for name in ("RUSTORE_KEY_ID", "RUSTORE_PRIVATE_KEY") if not os.environ.get(name)]
+if not os.environ.get("RUSTORE_APPS"):
+    _missing += [name for name in ("RUSTORE_PACKAGE_NAME", "RUSTORE_APP_ID") if not os.environ.get(name)]
+if _missing:
+    raise SystemExit(
+        f"Не заданы обязательные переменные окружения: {', '.join(_missing)}. "
+        "Приложения задаются через RUSTORE_APPS или пару RUSTORE_PACKAGE_NAME + RUSTORE_APP_ID."
+    )
+
 KEY_ID = os.environ["RUSTORE_KEY_ID"]
 PRIVATE_KEY_B64 = os.environ["RUSTORE_PRIVATE_KEY"]
-PACKAGE_NAME = os.environ["RUSTORE_PACKAGE_NAME"]
-APP_ID = os.environ["RUSTORE_APP_ID"]
+
+DATA_DIR = Path(os.environ.get("DATA_DIR") or "/data")  # каталог внутри Docker-тома
+LEGACY_DB_FILE = DATA_DIR / "state.db"  # база из версий с одним приложением
+
+
+@dataclass(frozen=True)
+class App:
+    package: str
+    app_id: str
+    label: str
+
+    @property
+    def db_file(self) -> Path:
+        return DATA_DIR / f"state-{re.sub(r'[^A-Za-z0-9._-]', '_', self.package)}.db"
+
+
+def _parse_apps() -> list[App]:
+    raw = os.environ.get("RUSTORE_APPS")
+    if not raw:
+        package = os.environ["RUSTORE_PACKAGE_NAME"].strip()
+        return [App(package, os.environ["RUSTORE_APP_ID"].strip(), package)]
+
+    apps = []
+    for entry in filter(None, (e.strip() for e in raw.split(","))):
+        parts = [p.strip() for p in entry.split(":", 2)]
+        if len(parts) < 2 or not parts[0] or not parts[1].isdigit():
+            raise SystemExit(f"Неверный элемент RUSTORE_APPS: «{entry}». Ожидается пакет:appId[:название]")
+        label = parts[2] if len(parts) == 3 and parts[2] else parts[0]
+        apps.append(App(parts[0], parts[1], label))
+    if len({app.package for app in apps}) != len(apps):
+        raise SystemExit("В RUSTORE_APPS есть повторяющиеся пакеты")
+    return apps
+
+
+APPS = _parse_apps()
 
 # ── Telegram (опционально) ──
 
@@ -56,6 +112,33 @@ MATRIX_ROOM_ID = os.environ.get("MATRIX_ROOM_ID")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL") or "300")
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET") or "3")
 LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=TZ_OFFSET))
+PAYMENTS_LOOKBACK_DAYS = max(1, int(os.environ.get("PAYMENTS_LOOKBACK_DAYS") or "7"))
+ALERT_AFTER_FAILURES = int(os.environ.get("ALERT_AFTER_FAILURES") or "3")
+HEARTBEAT_FILE = DATA_DIR / "heartbeat"  # время последнего цикла — для HEALTHCHECK
+
+
+def _flag(name: str, default: bool = True) -> bool:
+    value = os.environ.get(name)
+    if not value:
+        return default
+    return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+CHECK_VERSIONS = _flag("CHECK_VERSIONS")
+CHECK_ACCESS = _flag("CHECK_ACCESS")
+CHECK_SUBSCRIPTIONS = _flag("CHECK_SUBSCRIPTIONS")
+
+# ── сводки ──
+
+DIGEST_DAILY = _flag("DIGEST_DAILY", default=False)
+DIGEST_WEEKLY = _flag("DIGEST_WEEKLY", default=False)
+DIGEST_WEEKLY_DAY = int(os.environ.get("DIGEST_WEEKLY_DAY") or "1")
+if not 1 <= DIGEST_WEEKLY_DAY <= 7:
+    raise SystemExit("DIGEST_WEEKLY_DAY должен быть от 1 (понедельник) до 7 (воскресенье)")
+try:
+    DIGEST_TIME = datetime.time.fromisoformat(os.environ.get("DIGEST_TIME") or "09:00")
+except ValueError:
+    raise SystemExit("DIGEST_TIME должен быть в формате ЧЧ:ММ, например 09:00")
 
 # ── включённые каналы уведомлений ──
 

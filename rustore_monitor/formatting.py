@@ -1,7 +1,9 @@
 """Форматирование HTML-сообщений для уведомлений."""
 
 import html
+import datetime
 
+from . import config
 from .rustore import resolve_product_name
 
 RATING_NAMES = {
@@ -11,6 +13,9 @@ RATING_NAMES = {
     "amountTwo": 2,
     "amountOne": 1,
 }
+
+# длинные отзывы обрезаем, чтобы сообщение влезло в лимит Telegram (4096 символов)
+MAX_REVIEW_LEN = 1500
 
 
 def calculate_avg(ratings: dict) -> float:
@@ -27,6 +32,22 @@ def calculate_avg(ratings: dict) -> float:
         ratings.get("amountOne", 0) * 1
     )
     return s / total
+
+
+def app_header(app: config.App) -> str:
+    """Заголовок с названием приложения — когда приложений несколько."""
+    return f"📱 <b>{html.escape(app.label)}</b>\n"
+
+
+def format_check_failing(name: str, count: int, error: Exception) -> str:
+    text = html.escape(str(error) or type(error).__name__)
+    if len(text) > 500:
+        text = text[:500] + "…"
+    return f"⚠️ <b>Проверка «{name}» не проходит</b> (сбоев подряд: {count})\n<code>{text}</code>"
+
+
+def format_check_recovered(name: str) -> str:
+    return f"✅ <b>Проверка «{name}» снова работает</b>"
 
 
 def format_stats(rating: dict) -> str:
@@ -55,33 +76,59 @@ def format_stats(rating: dict) -> str:
     )
 
 
-def format_new_review(review: dict, rating: dict) -> str:
-    stars = "⭐" * review["appRating"]
+def _review_text(text: str | None) -> str:
+    text = text or ""
+    if len(text) > MAX_REVIEW_LEN:
+        text = text[:MAX_REVIEW_LEN].rstrip() + "…"
+    return html.escape(text)
+
+
+def _review_author(review: dict) -> str:
     user = html.escape(review.get("userName") or "—")
-    text = html.escape(review.get("commentText") or "")
     version_raw = review.get("appVersionName")
     version = f"  •  v{html.escape(version_raw)}" if version_raw else ""
+    if version and review.get("appVersionCode") is not None:
+        version += f" ({review['appVersionCode']})"
+    return f"{user}{version}"
+
+
+def _review_device(review: dict) -> str:
+    """Строка с устройством автора, если RuStore её прислал."""
+    info = review.get("deviceInfo") or {}
+    device = " ".join(filter(None, (info.get("device"), info.get("model"))))
+    parts = [p for p in (device, info.get("osVersion")) if p]
+    return f"📲 {html.escape('  •  '.join(parts))}\n" if parts else ""
+
+
+def format_new_review(review: dict, rating: dict) -> str:
+    stars = "⭐" * review["appRating"]
     edited = "  (ред.)" if review.get("edited") else ""
     return (
         f"📝 <b>Новый отзыв в RuStore</b>\n\n"
-        f"{stars}  •  {user}{version}{edited}\n"
-        f"«{text}»\n\n"
+        f"{stars}  •  {_review_author(review)}{edited}\n"
+        f"{_review_device(review)}"
+        f"«{_review_text(review.get('commentText'))}»\n\n"
         f"{format_stats(rating)}"
     )
 
 
-def format_edited_review(review: dict, rating: dict) -> str:
-    stars = "⭐" * review["appRating"]
-    user = html.escape(review.get("userName") or "—")
-    text = html.escape(review.get("commentText") or "")
-    version_raw = review.get("appVersionName")
-    version = f"  •  v{html.escape(version_raw)}" if version_raw else ""
-    return (
-        f"✏️ <b>Отзыв изменён</b>\n\n"
-        f"{stars}  •  {user}{version}\n"
-        f"«{text}»\n\n"
-        f"{format_stats(rating)}"
-    )
+def format_edited_review(review: dict, old_rating: int, old_text: str, rating: dict) -> str:
+    new_rating = review["appRating"]
+    new_text = review.get("commentText") or ""
+    lines = ["✏️ <b>Отзыв изменён</b>", "", _review_author(review)]
+
+    if old_rating != new_rating:
+        lines.append(f"Оценка: {'⭐' * old_rating} → {'⭐' * new_rating}")
+    else:
+        lines.append("⭐" * new_rating)
+
+    if old_text != new_text:
+        lines.append(f"Было: «{_review_text(old_text)}»")
+        lines.append(f"Стало: «{_review_text(new_text)}»")
+    else:
+        lines.append(f"«{_review_text(new_text)}»")
+
+    return "\n".join(lines) + f"\n\n{format_stats(rating)}"
 
 
 def format_silent_ratings(changes: dict[int, int], rating: dict) -> str:
@@ -96,6 +143,36 @@ def format_silent_ratings(changes: dict[int, int], rating: dict) -> str:
         f"⭐ <b>Новая оценка:</b> {changes_str}\n\n"
         f"{format_stats(rating)}"
     )
+
+
+# ── платежи ──
+
+
+def format_datetime(value: str | int | None) -> str:
+    """ISO-строку или миллисекунды с эпохи → «ДД.ММ.ГГГГ ЧЧ:ММ» в локальном часовом поясе."""
+    if value in (None, ""):
+        return ""
+    try:
+        if isinstance(value, int) or str(value).isdigit():
+            dt = datetime.datetime.fromtimestamp(int(value) / 1000, datetime.timezone.utc)
+        else:
+            dt = datetime.datetime.fromisoformat(str(value))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return str(value)
+    return dt.astimezone(config.LOCAL_TZ).strftime("%d.%m.%Y %H:%M")
+
+
+def format_amount(minor_units: int | float, currency: str = "RUB") -> str:
+    """Сумма в копейках → «1 299,90 ₽» (копейки — только если они есть)."""
+    minor = int(minor_units or 0)
+    sign = "-" if minor < 0 else ""
+    major, cents = divmod(abs(minor), 100)
+    major_str = f"{major:,}".replace(",", " ")
+    amount = f"{sign}{major_str},{cents:02d}" if cents else f"{sign}{major_str}"
+    symbol = "₽" if currency == "RUB" else html.escape(currency or "")
+    return f"{amount} {symbol}".strip()
 
 
 def format_payment_method(payment: dict) -> str:
@@ -125,19 +202,41 @@ def format_payment_method(payment: dict) -> str:
     return " ".join(parts)
 
 
-def format_new_invoice(inv: dict, products_map: dict) -> str:
+def _subscription_lines(sub: dict) -> list[str]:
+    """Строки с данными подписки (v5) для уведомления о платеже."""
+    lines = []
+
+    # orderId вида "3352..N" — счетов по подписке больше одного, N считается с 0
+    order_id = str(sub.get("orderId") or "")
+    if ".." in order_id:
+        number = order_id.rsplit("..", 1)[1]
+        if number.isdigit():
+            lines.append(f"<b>Подписка:</b> продление, платёж №{int(number) + 1}")
+    elif order_id:
+        lines.append("<b>Подписка:</b> первая оплата")
+
+    if sub.get("paymentState") == 2:
+        lines.append("<b>Пробный период</b>")
+
+    expiry = format_datetime(sub.get("expiryTimeMillis"))
+    if expiry:
+        lines.append(f"<b>Действует до:</b> {expiry}")
+
+    if sub.get("autoRenewing") is False:
+        lines.append("<b>Автопродление:</b> отключено")
+
+    return lines
+
+
+def format_new_invoice(app: config.App, inv: dict, subscription: dict | None = None) -> str:
     order = inv.get("order", {})
-    payment = inv.get("paymentInfo", {})
+    payment = inv.get("paymentInfo") or {}
 
-    amount = order.get("amountCurrent", 0) // 100
-    currency = order.get("currency", "RUB")
-    if currency == "RUB":
-        currency = "₽"
-
+    amount = format_amount(order.get("amountCurrent", 0), order.get("currency", "RUB"))
     visual_name = html.escape(order.get("visualName") or "—")
-    name = html.escape(resolve_product_name(order, products_map))
+    name = html.escape(resolve_product_name(app, order))
 
-    pay_date = html.escape(payment.get("paymentDate") or inv.get("invoiceDate") or "")
+    pay_date = html.escape(format_datetime(payment.get("paymentDate") or inv.get("invoiceDate")))
     method = html.escape(format_payment_method(payment))
 
     lines = [
@@ -145,12 +244,186 @@ def format_new_invoice(inv: dict, products_map: dict) -> str:
         "",
         f"<b>{visual_name}</b>",
         f"<b>Продукт:</b> {name}",
-        f"<b>Сумма:</b> {amount} {currency}",
-        "",
-        f"<b>Дата:</b> {pay_date}",
+        f"<b>Сумма:</b> {amount}",
     ]
+
+    if subscription:
+        lines += _subscription_lines(subscription)
+
+    lines += ["", f"<b>Дата:</b> {pay_date}"]
 
     if method:
         lines.append(f"<b>Способ оплаты:</b> {method}")
 
+    return "\n".join(lines)
+
+
+def format_refund(app: config.App, inv: dict) -> str:
+    order = inv.get("order", {})
+    status = (inv.get("invoiceStatus") or "").upper()
+
+    title = "↩️ <b>Возврат средств</b>" if status == "REFUNDED" else "↩️ <b>Холд отменён, деньги возвращены</b>"
+    amount = format_amount(order.get("amountCurrent", 0), order.get("currency", "RUB"))
+    name = html.escape(resolve_product_name(app, order))
+
+    lines = [
+        title,
+        "",
+        f"<b>Продукт:</b> {name}",
+        f"<b>Сумма:</b> {amount}",
+        f"<b>Счёт:</b> №{inv.get('invoiceId')} от {html.escape(format_datetime(inv.get('invoiceDate')))}",
+    ]
+    refund_date = format_datetime(inv.get("refundDate"))
+    if refund_date:
+        lines.append(f"<b>Дата возврата:</b> {html.escape(refund_date)}")
+    return "\n".join(lines)
+
+
+# ── версии ──
+
+VERSION_STATUSES = {
+    "ACTIVE": ("✅", "опубликована"),
+    "PARTIAL_ACTIVE": ("🟢", "опубликована частично"),
+    "READY_FOR_PUBLICATION": ("👍", "одобрена модерацией"),
+    "PREVIOUS_ACTIVE": ("⏪", "предыдущая активная"),
+    "ARCHIVED": ("🗄", "в архиве"),
+    "REJECTED_BY_MODERATOR": ("❌", "отклонена модератором"),
+    "TAKEN_FOR_MODERATION": ("📥", "принята на модерацию"),
+    "MODERATION": ("🔍", "на модерации"),
+    "AUTO_CHECK": ("🛡", "автоматическая проверка"),
+    "AUTO_CHECK_FAILED": ("❌", "не прошла автоматическую проверку"),
+    "DRAFT": ("📝", "черновик"),
+    "DELETED_DRAFT": ("🗑", "черновик удалён"),
+    "REJECTED_BY_SECURITY": ("❌", "отклонена службой безопасности"),
+}
+
+REJECTED_STATUSES = {"REJECTED_BY_MODERATOR", "AUTO_CHECK_FAILED", "REJECTED_BY_SECURITY"}
+
+
+def format_version_change(version: dict, old_status: str | None) -> str:
+    status = version.get("versionStatus") or ""
+    emoji, title = VERSION_STATUSES.get(status, ("📦", status))
+    name = html.escape(str(version.get("versionName") or "?"))
+    code = version.get("versionCode")
+    alpha = "  •  альфа" if (version.get("testingType") or "").lower() == "alpha" else ""
+
+    lines = [f"{emoji} <b>Версия {name} ({code}) — {title}</b>{alpha}"]
+
+    if old_status and old_status != status:
+        old_title = VERSION_STATUSES.get(old_status, ("", old_status))[1]
+        lines.append(f"Было: {old_title}")
+
+    if status == "PARTIAL_ACTIVE" and version.get("partialValue") is not None:
+        lines.append(f"<b>Доля пользователей:</b> {version['partialValue']}%")
+
+    if status == "READY_FOR_PUBLICATION":
+        publish_type = version.get("publishType")
+        if publish_type == "MANUAL":
+            lines.append("Ожидает ручной публикации")
+        elif publish_type == "DELAYED":
+            lines.append(f"<b>Публикация запланирована:</b> {format_datetime(version.get('publishDateTime'))}")
+
+    if status in REJECTED_STATUSES:
+        lines.append("Причина — в RuStore Консоли")
+
+    if status in ("ACTIVE", "PARTIAL_ACTIVE") and version.get("whatsNew"):
+        lines += ["", f"<b>Что нового:</b>\n{_review_text(version['whatsNew'])}"]
+
+    return "\n".join(lines)
+
+
+def format_partial_change(version: dict, old_partial: int | None) -> str:
+    name = html.escape(str(version.get("versionName") or "?"))
+    return (
+        f"🟢 <b>Версия {name} ({version.get('versionCode')}) — изменена доля публикации</b>\n"
+        f"{old_partial if old_partial is not None else '?'}% → {version.get('partialValue')}%"
+    )
+
+
+# ── доступы ──
+
+ROLE_NAMES = {
+    "OWNER": "владелец",
+    "NON_RESIDENT_OWNER": "владелец (нерезидент)",
+    "INDIVIDUAL_OWNER": "владелец (физлицо)",
+    "ADMIN": "администратор",
+    "RELEASE_MANAGER": "релиз-менеджер",
+    "DEV": "разработчик",
+    "FINANCIAL_MANAGER": "финансовый менеджер",
+    "SUPPORT": "специалист поддержки",
+}
+
+
+def _roles(roles: set[str]) -> str:
+    return ", ".join(ROLE_NAMES.get(r, r) for r in sorted(roles))
+
+
+def format_access_changes(
+    added: dict[str, set[str]],
+    removed: dict[str, set[str]],
+    names: dict[str, str],
+) -> str:
+    """added/removed: vkId → набор ролей; names: vkId → имя."""
+    lines = ["🔐 <b>Изменение доступов к приложению</b>", ""]
+    for vk_id in sorted(set(added) | set(removed)):
+        who = f"{html.escape(names.get(vk_id) or '—')} (VK ID {html.escape(vk_id)})"
+        plus, minus = added.get(vk_id, set()), removed.get(vk_id, set())
+        if plus and minus:
+            lines.append(f"🔄 {who}: {_roles(minus)} → {_roles(plus)}")
+        elif plus:
+            lines.append(f"➕ {who}: {_roles(plus)}")
+        else:
+            lines.append(f"➖ {who}: {_roles(minus)}")
+    return "\n".join(lines)
+
+
+# ── сводки ──
+
+
+def format_digest(kind: str, days: list[datetime.date], data: dict) -> str:
+    if kind == "weekly":
+        title = "🗓 <b>Сводка за неделю</b>"
+        period = f"{days[0]:%d.%m} — {days[-1]:%d.%m.%Y}"
+    else:
+        title = "🗓 <b>Сводка за день</b>"
+        period = f"{days[0]:%d.%m.%Y}"
+
+    lines = [title, period, ""]
+
+    paid, paid_sum, refunded, refunded_sum, currency = data["payments"]
+    lines.append(f"💰 <b>Платежей:</b> {paid} на {format_amount(paid_sum, currency)}")
+    if refunded:
+        lines.append(
+            f"↩️ <b>Из них возвращено:</b> {refunded} на {format_amount(refunded_sum, currency)}"
+            f"  •  итого {format_amount(paid_sum - refunded_sum, currency)}"
+        )
+
+    reviews = data["reviews"]  # звёзды → число отзывов за период
+    total_reviews = sum(reviews.values())
+    if total_reviews:
+        by_star = "  ".join(f"⭐{star} — {reviews[star]}" for star in sorted(reviews, reverse=True))
+        lines.append(f"📝 <b>Отзывов:</b> {total_reviews}  ({by_star})")
+    else:
+        lines.append("📝 <b>Отзывов:</b> 0")
+
+    rating = data["rating"]
+    prev = data.get("prev_rating")
+    if prev:
+        new_ratings = rating["totalRatings"] - prev["total"]
+        avg_delta = rating["averageUserRating"] - prev["average"]
+        lines.append(
+            f"⭐ <b>Новых оценок:</b> {new_ratings:+d}  •  средняя "
+            f"{prev['average']:.2f} → {rating['averageUserRating']:.2f} ({avg_delta:+.2f})"
+        )
+
+    for version in data.get("active_versions") or []:
+        name = html.escape(str(version.get("versionName") or "?"))
+        partial = (
+            f", {version['partialValue']}% пользователей"
+            if version.get("versionStatus") == "PARTIAL_ACTIVE" else ""
+        )
+        alpha = ", альфа" if (version.get("testingType") or "").lower() == "alpha" else ""
+        lines.append(f"📦 <b>Опубликована:</b> {name} ({version.get('versionCode')}{partial}{alpha})")
+
+    lines += ["", format_stats(rating)]
     return "\n".join(lines)

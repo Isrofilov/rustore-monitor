@@ -67,15 +67,42 @@ def get_rustore_token() -> str:
 # ── запросы к API RuStore ──
 
 
+def _invalidate_token():
+    global _cached_token, _token_expires_at
+    _cached_token = None
+    _token_expires_at = 0
+
+
+def _is_token_error(resp: httpx.Response) -> bool:
+    """Ответ означает протухший/невалидный токен — стоит получить новый и повторить."""
+    if resp.status_code == 401:
+        return True
+    try:
+        message = (resp.json().get("message") or "").lower()
+    except ValueError:
+        return False
+    return "expired" in message and ("jwe" in message or "token" in message)
+
+
 def _rustore_get(url: str, label: str, **kwargs) -> dict:
-    """Выполняет GET-запрос к API RuStore с авторизацией и проверкой ответа."""
-    token = get_rustore_token()
-    resp = httpx.get(
-        url,
-        headers={"Public-Token": token},
-        timeout=15,
-        **kwargs,
-    )
+    """Выполняет GET-запрос к API RuStore с авторизацией и проверкой ответа.
+
+    Если токен отвергнут сервером раньше своего TTL — получает новый и
+    повторяет запрос один раз.
+    """
+    for attempt in range(2):
+        resp = httpx.get(
+            url,
+            headers={"Public-Token": get_rustore_token()},
+            timeout=15,
+            **kwargs,
+        )
+        if attempt == 0 and _is_token_error(resp):
+            log.warning("RuStore отверг токен (%s), получаю новый", label)
+            _invalidate_token()
+            continue
+        break
+
     resp.raise_for_status()
     data = resp.json()
     if data.get("code") != "OK":
@@ -83,85 +110,164 @@ def _rustore_get(url: str, label: str, **kwargs) -> dict:
     return data["body"]
 
 
-def fetch_rating() -> dict:
+def fetch_rating(app: config.App) -> dict:
     """Получает статистику оценок приложения."""
     return _rustore_get(
-        f"{config.RUSTORE_API_BASE}/{config.PACKAGE_NAME}/comment/statistic",
+        f"{config.RUSTORE_API_BASE}/{app.package}/comment/statistic",
         "получения рейтинга",
     )
 
 
-def fetch_reviews(size: int = 100) -> list[dict]:
-    """Получает список последних отзывов."""
+def fetch_reviews(app: config.App, size: int = 100, page: int = 0) -> list[dict]:
+    """Получает страницу последних отзывов (свежие по updatedAt — первыми)."""
     return _rustore_get(
-        f"{config.RUSTORE_API_BASE}/{config.PACKAGE_NAME}/comment",
+        f"{config.RUSTORE_API_BASE}/{app.package}/comment",
         "получения отзывов",
-        params={"size": size},
+        params={"page": page, "size": size},
     )
 
 
-def fetch_products() -> list[dict]:
+def review_datetime(review: dict, field: str = "commentDate") -> datetime.datetime | None:
+    """Время из отзыва: поле ``<field>Iso`` (UTC), иначе ``<field>`` без пояса — тоже UTC."""
+    for value in (review.get(f"{field}Iso"), review.get(field)):
+        if not value:
+            continue
+        try:
+            dt = datetime.datetime.fromisoformat(value)
+        except ValueError:
+            continue
+        return dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+    return None
+
+
+def fetch_reviews_since(app: config.App, since: datetime.datetime, max_pages: int = 50) -> list[dict]:
+    """Листает отзывы, пока не дойдёт до страницы, целиком опубликованной раньше since."""
+    reviews: list[dict] = []
+    for page in range(max_pages):
+        batch = fetch_reviews(app, size=100, page=page)
+        reviews.extend(batch)
+        if len(batch) < 100:
+            break
+        times = [review_datetime(r, "updatedAt") for r in batch]
+        if all(t is not None and t < since for t in times):
+            break
+    return reviews
+
+
+def fetch_products(app: config.App) -> list[dict]:
     """Получает список продуктов (разовые покупки)."""
     body = _rustore_get(
-        f"{config.RUSTORE_PAYMENTS_BASE}/{config.APP_ID}/catalog/products",
+        f"{config.RUSTORE_PAYMENTS_BASE}/{app.app_id}/catalog/products",
         "получения продуктов",
     )
     return body.get("elements", [])
 
 
-def fetch_subscriptions() -> list[dict]:
+def fetch_subscriptions(app: config.App) -> list[dict]:
     """Получает список подписок."""
     body = _rustore_get(
-        f"{config.RUSTORE_PAYMENTS_BASE}/{config.APP_ID}/catalog/subscriptions",
+        f"{config.RUSTORE_PAYMENTS_BASE}/{app.app_id}/catalog/subscriptions",
         "получения подписок",
     )
     return body.get("elements", [])
 
 
-_products_cache: dict[str, str] = {}
+# appId → (productId → название, набор productId подписок)
+_catalogs: dict[str, tuple[dict[str, str], set[str]]] = {}
 
 
-def all_products_map() -> dict[str, str]:
+def all_products_map(app: config.App) -> dict[str, str]:
     """Возвращает кешированный словарь productId → name. Загружает при первом вызове."""
-    global _products_cache
-    if not _products_cache:
-        _refresh_products_cache()
-    return _products_cache
+    if app.app_id not in _catalogs:
+        _refresh_products_cache(app)
+    return _catalogs[app.app_id][0]
 
 
-def _refresh_products_cache():
+def _refresh_products_cache(app: config.App):
     """Перезагружает словарь продуктов и подписок из API."""
-    global _products_cache
-    items = fetch_products() + fetch_subscriptions()
-    _products_cache = {
-        item["productId"]: item["name"]
-        for item in items
-    }
-    log.info("Кеш продуктов обновлён, %d записей", len(_products_cache))
+    products = fetch_products(app)
+    subscriptions = fetch_subscriptions(app)
+    names = {item["productId"]: item["name"] for item in products + subscriptions}
+    _catalogs[app.app_id] = (names, {item["productId"] for item in subscriptions})
+    log.info("Кеш продуктов %s обновлён, %d записей", app.package, len(names))
 
 
-def resolve_product_name(order: dict, products_map: dict) -> str:
+def is_subscription(app: config.App, item_code: str | None) -> bool:
+    """Является ли продукт подпиской (по каталогу подписок)."""
+    if not item_code:
+        return False
+    all_products_map(app)
+    return item_code in _catalogs[app.app_id][1]
+
+
+def resolve_product_name(app: config.App, order: dict) -> str:
     """Определяет название продукта по itemCode. При промахе кеша — перезагружает."""
     code = order.get("itemCode")
     if not code:
         return order.get("visualName") or "—"
+    products_map = all_products_map(app)
     if code in products_map:
         return products_map[code]
     # ключ не найден — перезагружаем кеш
-    _refresh_products_cache()
-    return _products_cache.get(code) or order.get("visualName") or "—"
+    _refresh_products_cache(app)
+    return _catalogs[app.app_id][0].get(code) or order.get("visualName") or "—"
 
 
-def fetch_invoices(date: str) -> list[dict]:
-    """Получает подтверждённые платежи за указанную дату."""
-    body = _rustore_get(
-        f"{config.RUSTORE_PAYMENTS_BASE}/{config.APP_ID}/invoices",
-        "получения платежей",
-        params={"invoiceStatuses": "confirmed", "invoiceDate": date},
+INVOICE_STATUSES = ("confirmed", "refunded", "reversed")
+
+
+def fetch_invoices(app: config.App, date: str) -> list[dict]:
+    """Получает успешные и возвращённые платежи, созданные в указанную дату (все страницы)."""
+    invoices: list[dict] = []
+    page = 0
+    while True:
+        body = _rustore_get(
+            f"{config.RUSTORE_PAYMENTS_BASE}/{app.app_id}/invoices",
+            "получения платежей",
+            params={
+                "invoiceStatuses": INVOICE_STATUSES,
+                "invoiceDate": date,
+                "pageNumber": page,
+                "pageSize": 500,
+            },
+        )
+        invoices.extend(body.get("content") or [])
+        page += 1
+        if page >= (body.get("totalPages") or 0):
+            return invoices
+
+
+def fetch_subscription(app: config.App, subscription_id: str, purchase_id: str) -> dict:
+    """Получает данные подписки пользователя (v5, только для подписок через Pay SDK)."""
+    return _rustore_get(
+        f"{config.RUSTORE_PUBLIC_BASE}/v5/subscription/"
+        f"{app.package}/{subscription_id}/{purchase_id}",
+        "получения данных подписки",
     )
-    return body.get("content", [])
 
 
-def detect_new_invoices(invoices: list[dict], old_ids: set[int]) -> list[dict]:
-    """Фильтрует только новые платежи, которых нет в old_ids."""
-    return [inv for inv in invoices if inv["invoiceId"] not in old_ids]
+def fetch_versions(app: config.App) -> list[dict]:
+    """Получает последние версии приложения (релизные и альфа) со статусами."""
+    body = _rustore_get(
+        f"{config.RUSTORE_API_BASE}/{app.package}/version",
+        "получения статусов версий",
+        params={"filterTestingType": "ALL", "page": 0, "size": 100},
+    )
+    return body.get("content") or []
+
+
+def fetch_developers(app: config.App) -> list[dict]:
+    """Получает всех пользователей с доступом к приложению и их роли (все страницы)."""
+    developers: list[dict] = []
+    params: dict = {"pageSize": 100}
+    while True:
+        body = _rustore_get(
+            f"{config.RUSTORE_API_BASE}/{app.package}/developer",
+            "получения доступов",
+            params=params,
+        )
+        developers.extend(body.get("content") or [])
+        token = body.get("pageToken")
+        if not token:
+            return developers
+        params = {"pageSize": 100, "pageToken": token}

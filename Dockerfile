@@ -35,4 +35,8 @@ COPY rustore_monitor/ ./rustore_monitor/
 
 VOLUME /data
 
+# heartbeat обновляется после каждой итерации; первая может идти долго
+HEALTHCHECK --interval=60s --timeout=10s --start-period=15m --retries=3 \
+    CMD ["python", "-m", "rustore_monitor.healthcheck"]
+
 CMD ["python", "-u", "-m", "rustore_monitor"]
