@@ -27,6 +27,7 @@
     DIGEST_WEEKLY        — еженедельная сводка за 7 дней (по умолчанию 0)
     DIGEST_WEEKLY_DAY    — день недели еженедельной сводки, 1 — понедельник … 7 — воскресенье (по умолчанию 1)
     DIGEST_TIME          — время отправки сводок ЧЧ:ММ в TZ_OFFSET (по умолчанию 09:00)
+    ALERT_AFTER_FAILURES — после скольких подряд упавших проверок слать предупреждение (по умолчанию 3, 0 — выкл.)
     DATA_DIR             — каталог для базы состояния (по умолчанию /data)
 """
 
@@ -112,6 +113,8 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL") or "300")
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET") or "3")
 LOCAL_TZ = datetime.timezone(datetime.timedelta(hours=TZ_OFFSET))
 PAYMENTS_LOOKBACK_DAYS = max(1, int(os.environ.get("PAYMENTS_LOOKBACK_DAYS") or "7"))
+ALERT_AFTER_FAILURES = int(os.environ.get("ALERT_AFTER_FAILURES") or "3")
+HEARTBEAT_FILE = DATA_DIR / "heartbeat"  # время последнего цикла — для HEALTHCHECK
 
 
 def _flag(name: str, default: bool = True) -> bool:

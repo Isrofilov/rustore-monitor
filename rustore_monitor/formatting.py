@@ -39,6 +39,17 @@ def app_header(app: config.App) -> str:
     return f"📱 <b>{html.escape(app.label)}</b>\n"
 
 
+def format_check_failing(name: str, count: int, error: Exception) -> str:
+    text = html.escape(str(error) or type(error).__name__)
+    if len(text) > 500:
+        text = text[:500] + "…"
+    return f"⚠️ <b>Проверка «{name}» не проходит</b> (сбоев подряд: {count})\n<code>{text}</code>"
+
+
+def format_check_recovered(name: str) -> str:
+    return f"✅ <b>Проверка «{name}» снова работает</b>"
+
+
 def format_stats(rating: dict) -> str:
     r = rating["ratings"]
     api_avg = rating["averageUserRating"]

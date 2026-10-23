@@ -318,6 +318,32 @@ def _enabled_checks() -> list[tuple[str, Callable]]:
     return checks
 
 
+# (пакет, проверка) → сколько раз подряд она упала
+_failures: dict[tuple[str, str], int] = {}
+
+
+def _notify_quietly(text: str):
+    """Служебное уведомление: если канал недоступен — только пишем в лог."""
+    try:
+        notify(text)
+    except Exception as e:
+        log.warning("Не удалось отправить служебное уведомление: %s", e)
+
+
+def _record_result(app: config.App, header: str, name: str, error: Exception | None):
+    """Считает сбои проверки подряд: предупреждает на пороге и сообщает о восстановлении."""
+    key = (app.package, name)
+    threshold = config.ALERT_AFTER_FAILURES
+    if error is None:
+        if threshold and _failures.get(key, 0) >= threshold:
+            _notify_quietly(header + formatting.format_check_recovered(name))
+        _failures.pop(key, None)
+        return
+    _failures[key] = _failures.get(key, 0) + 1
+    if threshold and _failures[key] == threshold:
+        _notify_quietly(header + formatting.format_check_failing(name, threshold, error))
+
+
 def check_app(app: config.App):
     """Выполняет все включённые проверки одного приложения и отправляет уведомления."""
     header = formatting.app_header(app) if len(config.APPS) > 1 else ""
@@ -333,9 +359,12 @@ def check_app(app: config.App):
                     time.sleep(1.0)
                 save()
                 conn.commit()
-            except Exception:
+            except Exception as e:
                 conn.rollback()
                 log.exception("Ошибка при проверке %s: %s", app.package, name)
+                _record_result(app, header, name, e)
+            else:
+                _record_result(app, header, name, None)
 
         state.save_meta(conn, last_check=datetime.datetime.now(config.LOCAL_TZ).isoformat())
         conn.commit()
@@ -377,4 +406,8 @@ def main():
             log.info("Проверка завершена")
         except Exception:
             log.exception("Ошибка при проверке")
+        try:
+            config.HEARTBEAT_FILE.write_text(datetime.datetime.now(config.LOCAL_TZ).isoformat())
+        except OSError as e:
+            log.warning("Не удалось обновить %s: %s", config.HEARTBEAT_FILE, e)
         time.sleep(config.POLL_INTERVAL)
