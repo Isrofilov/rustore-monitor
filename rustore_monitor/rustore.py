@@ -220,3 +220,13 @@ def fetch_subscription(subscription_id: str, purchase_id: str) -> dict:
         f"{config.PACKAGE_NAME}/{subscription_id}/{purchase_id}",
         "получения данных подписки",
     )
+
+
+def fetch_versions() -> list[dict]:
+    """Получает последние версии приложения (релизные и альфа) со статусами."""
+    body = _rustore_get(
+        f"{config.RUSTORE_API_BASE}/{config.PACKAGE_NAME}/version",
+        "получения статусов версий",
+        params={"filterTestingType": "ALL", "page": 0, "size": 100},
+    )
+    return body.get("content") or []

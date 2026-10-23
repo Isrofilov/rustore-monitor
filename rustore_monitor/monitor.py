@@ -165,8 +165,40 @@ def check_payments(conn) -> CheckResult:
     return messages, save
 
 
+# переходы, о которых не уведомляем: создание черновика разработчиком и
+# автоматический перевод прошлой версии в PREVIOUS_ACTIVE при выходе новой
+QUIET_VERSION_STATUSES = {"DRAFT", "DELETED_DRAFT", "PREVIOUS_ACTIVE"}
+
+
+def check_versions(conn) -> CheckResult:
+    """Смена статусов версий: модерация, одобрение, отклонение, публикация."""
+    old_versions = state.load_versions(conn)
+    is_first_run = state.get_meta(conn, "versions_initialized") is None
+
+    versions = rustore.fetch_versions()
+
+    messages: list[str] = []
+    if not is_first_run:
+        for version in versions:
+            status = version.get("versionStatus")
+            old_status, old_partial = old_versions.get(version["versionId"], (None, None))
+            if status != old_status:
+                if status not in QUIET_VERSION_STATUSES:
+                    messages.append(formatting.format_version_change(version, old_status))
+            elif status == "PARTIAL_ACTIVE" and version.get("partialValue") != old_partial:
+                messages.append(formatting.format_partial_change(version, old_partial))
+
+    def save():
+        state.save_versions(conn, versions)
+        state.save_meta(conn, versions_initialized="1")
+
+    return messages, save
+
+
 def _enabled_checks() -> list[tuple[str, Callable]]:
     checks: list[tuple[str, Callable]] = [("отзывы", check_reviews), ("платежи", check_payments)]
+    if config.CHECK_VERSIONS:
+        checks.append(("версии", check_versions))
     return checks
 
 

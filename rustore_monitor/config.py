@@ -18,6 +18,7 @@
     POLL_INTERVAL        — интервал опроса в секундах (по умолчанию 300)
     TZ_OFFSET            — смещение часового пояса в часах (по умолчанию +3, МСК)
     PAYMENTS_LOOKBACK_DAYS — за сколько последних дней проверять платежи и возвраты (по умолчанию 7)
+    CHECK_VERSIONS       — отслеживать статусы версий (по умолчанию 1)
     CHECK_SUBSCRIPTIONS  — дополнять платежи по подпискам данными подписки (по умолчанию 1)
 """
 
@@ -75,4 +76,5 @@ def _flag(name: str, default: bool = True) -> bool:
     return value.strip().lower() not in ("0", "false", "no", "off")
 
 
+CHECK_VERSIONS = _flag("CHECK_VERSIONS")
 CHECK_SUBSCRIPTIONS = _flag("CHECK_SUBSCRIPTIONS")

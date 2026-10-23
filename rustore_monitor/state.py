@@ -34,6 +34,11 @@ def get_db() -> sqlite3.Connection:
             key   TEXT PRIMARY KEY,
             value TEXT
         );
+        CREATE TABLE IF NOT EXISTS versions (
+            version_id INTEGER PRIMARY KEY,
+            status     TEXT NOT NULL,
+            partial    INTEGER
+        );
     """)
     # оценка и текст отзыва — чтобы ловить повторные правки и показывать «было → стало».
     # У строк из старой схемы они NULL: такие отзывы просто заполняются без уведомления.
@@ -98,6 +103,24 @@ def save_invoices(conn: sqlite3.Connection, invoices: list[tuple[int, str, str]]
 def delete_invoices_before(conn: sqlite3.Connection, date: str):
     """Удаляет платежи, вышедшие за окно проверки."""
     conn.execute("DELETE FROM invoices WHERE invoice_date < ?", (date,))
+
+
+# ── версии ──
+
+
+def load_versions(conn: sqlite3.Connection) -> dict[int, tuple[str, int | None]]:
+    """versionId → (статус, % частичной публикации)."""
+    return {
+        row[0]: (row[1], row[2])
+        for row in conn.execute("SELECT version_id, status, partial FROM versions")
+    }
+
+
+def save_versions(conn: sqlite3.Connection, versions: list[dict]):
+    conn.executemany(
+        "INSERT OR REPLACE INTO versions (version_id, status, partial) VALUES (?, ?, ?)",
+        [(v["versionId"], v["versionStatus"], v.get("partialValue")) for v in versions],
+    )
 
 
 # ── meta ──

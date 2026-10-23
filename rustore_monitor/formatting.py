@@ -250,3 +250,64 @@ def format_refund(inv: dict, products_map: dict) -> str:
     if refund_date:
         lines.append(f"<b>Дата возврата:</b> {html.escape(refund_date)}")
     return "\n".join(lines)
+
+
+# ── версии ──
+
+VERSION_STATUSES = {
+    "ACTIVE": ("✅", "опубликована"),
+    "PARTIAL_ACTIVE": ("🟢", "опубликована частично"),
+    "READY_FOR_PUBLICATION": ("👍", "одобрена модерацией"),
+    "PREVIOUS_ACTIVE": ("⏪", "предыдущая активная"),
+    "ARCHIVED": ("🗄", "в архиве"),
+    "REJECTED_BY_MODERATOR": ("❌", "отклонена модератором"),
+    "TAKEN_FOR_MODERATION": ("📥", "принята на модерацию"),
+    "MODERATION": ("🔍", "на модерации"),
+    "AUTO_CHECK": ("🛡", "автоматическая проверка"),
+    "AUTO_CHECK_FAILED": ("❌", "не прошла автоматическую проверку"),
+    "DRAFT": ("📝", "черновик"),
+    "DELETED_DRAFT": ("🗑", "черновик удалён"),
+    "REJECTED_BY_SECURITY": ("❌", "отклонена службой безопасности"),
+}
+
+REJECTED_STATUSES = {"REJECTED_BY_MODERATOR", "AUTO_CHECK_FAILED", "REJECTED_BY_SECURITY"}
+
+
+def format_version_change(version: dict, old_status: str | None) -> str:
+    status = version.get("versionStatus") or ""
+    emoji, title = VERSION_STATUSES.get(status, ("📦", status))
+    name = html.escape(str(version.get("versionName") or "?"))
+    code = version.get("versionCode")
+    alpha = "  •  альфа" if (version.get("testingType") or "").lower() == "alpha" else ""
+
+    lines = [f"{emoji} <b>Версия {name} ({code}) — {title}</b>{alpha}"]
+
+    if old_status and old_status != status:
+        old_title = VERSION_STATUSES.get(old_status, ("", old_status))[1]
+        lines.append(f"Было: {old_title}")
+
+    if status == "PARTIAL_ACTIVE" and version.get("partialValue") is not None:
+        lines.append(f"<b>Доля пользователей:</b> {version['partialValue']}%")
+
+    if status == "READY_FOR_PUBLICATION":
+        publish_type = version.get("publishType")
+        if publish_type == "MANUAL":
+            lines.append("Ожидает ручной публикации")
+        elif publish_type == "DELAYED":
+            lines.append(f"<b>Публикация запланирована:</b> {format_datetime(version.get('publishDateTime'))}")
+
+    if status in REJECTED_STATUSES:
+        lines.append("Причина — в RuStore Консоли")
+
+    if status in ("ACTIVE", "PARTIAL_ACTIVE") and version.get("whatsNew"):
+        lines += ["", f"<b>Что нового:</b>\n{_review_text(version['whatsNew'])}"]
+
+    return "\n".join(lines)
+
+
+def format_partial_change(version: dict, old_partial: int | None) -> str:
+    name = html.escape(str(version.get("versionName") or "?"))
+    return (
+        f"🟢 <b>Версия {name} ({version.get('versionCode')}) — изменена доля публикации</b>\n"
+        f"{old_partial if old_partial is not None else '?'}% → {version.get('partialValue')}%"
+    )
