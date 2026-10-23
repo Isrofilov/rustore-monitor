@@ -195,10 +195,41 @@ def check_versions(conn) -> CheckResult:
     return messages, save
 
 
+def check_access(conn) -> CheckResult:
+    """Выдача, отзыв и изменение доступов пользователей к приложению."""
+    old = state.load_developers(conn)
+    is_first_run = state.get_meta(conn, "access_initialized") is None
+
+    current: dict[tuple[str, str], str] = {}
+    for dev in rustore.fetch_developers():
+        name = " ".join(filter(None, (dev.get("firstName"), dev.get("lastName"))))
+        current[(str(dev["devVkId"]), dev["role"])] = name
+
+    messages: list[str] = []
+    if not is_first_run:
+        added: dict[str, set[str]] = {}
+        removed: dict[str, set[str]] = {}
+        for vk_id, role in current.keys() - old.keys():
+            added.setdefault(vk_id, set()).add(role)
+        for vk_id, role in old.keys() - current.keys():
+            removed.setdefault(vk_id, set()).add(role)
+        if added or removed:
+            names = {vk_id: name for (vk_id, _), name in {**old, **current}.items()}
+            messages.append(formatting.format_access_changes(added, removed, names))
+
+    def save():
+        state.save_developers(conn, current)
+        state.save_meta(conn, access_initialized="1")
+
+    return messages, save
+
+
 def _enabled_checks() -> list[tuple[str, Callable]]:
     checks: list[tuple[str, Callable]] = [("отзывы", check_reviews), ("платежи", check_payments)]
     if config.CHECK_VERSIONS:
         checks.append(("версии", check_versions))
+    if config.CHECK_ACCESS:
+        checks.append(("доступы", check_access))
     return checks
 
 

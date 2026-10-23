@@ -311,3 +311,40 @@ def format_partial_change(version: dict, old_partial: int | None) -> str:
         f"🟢 <b>Версия {name} ({version.get('versionCode')}) — изменена доля публикации</b>\n"
         f"{old_partial if old_partial is not None else '?'}% → {version.get('partialValue')}%"
     )
+
+
+# ── доступы ──
+
+ROLE_NAMES = {
+    "OWNER": "владелец",
+    "NON_RESIDENT_OWNER": "владелец (нерезидент)",
+    "INDIVIDUAL_OWNER": "владелец (физлицо)",
+    "ADMIN": "администратор",
+    "RELEASE_MANAGER": "релиз-менеджер",
+    "DEV": "разработчик",
+    "FINANCIAL_MANAGER": "финансовый менеджер",
+    "SUPPORT": "специалист поддержки",
+}
+
+
+def _roles(roles: set[str]) -> str:
+    return ", ".join(ROLE_NAMES.get(r, r) for r in sorted(roles))
+
+
+def format_access_changes(
+    added: dict[str, set[str]],
+    removed: dict[str, set[str]],
+    names: dict[str, str],
+) -> str:
+    """added/removed: vkId → набор ролей; names: vkId → имя."""
+    lines = ["🔐 <b>Изменение доступов к приложению</b>", ""]
+    for vk_id in sorted(set(added) | set(removed)):
+        who = f"{html.escape(names.get(vk_id) or '—')} (VK ID {html.escape(vk_id)})"
+        plus, minus = added.get(vk_id, set()), removed.get(vk_id, set())
+        if plus and minus:
+            lines.append(f"🔄 {who}: {_roles(minus)} → {_roles(plus)}")
+        elif plus:
+            lines.append(f"➕ {who}: {_roles(plus)}")
+        else:
+            lines.append(f"➖ {who}: {_roles(minus)}")
+    return "\n".join(lines)

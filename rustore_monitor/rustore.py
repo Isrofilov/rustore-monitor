@@ -230,3 +230,20 @@ def fetch_versions() -> list[dict]:
         params={"filterTestingType": "ALL", "page": 0, "size": 100},
     )
     return body.get("content") or []
+
+
+def fetch_developers() -> list[dict]:
+    """Получает всех пользователей с доступом к приложению и их роли (все страницы)."""
+    developers: list[dict] = []
+    params: dict = {"pageSize": 100}
+    while True:
+        body = _rustore_get(
+            f"{config.RUSTORE_API_BASE}/{config.PACKAGE_NAME}/developer",
+            "получения доступов",
+            params=params,
+        )
+        developers.extend(body.get("content") or [])
+        token = body.get("pageToken")
+        if not token:
+            return developers
+        params = {"pageSize": 100, "pageToken": token}

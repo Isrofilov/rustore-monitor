@@ -39,6 +39,12 @@ def get_db() -> sqlite3.Connection:
             status     TEXT NOT NULL,
             partial    INTEGER
         );
+        CREATE TABLE IF NOT EXISTS developers (
+            vk_id TEXT NOT NULL,
+            role  TEXT NOT NULL,
+            name  TEXT,
+            PRIMARY KEY (vk_id, role)
+        );
     """)
     # оценка и текст отзыва — чтобы ловить повторные правки и показывать «было → стало».
     # У строк из старой схемы они NULL: такие отзывы просто заполняются без уведомления.
@@ -120,6 +126,25 @@ def save_versions(conn: sqlite3.Connection, versions: list[dict]):
     conn.executemany(
         "INSERT OR REPLACE INTO versions (version_id, status, partial) VALUES (?, ?, ?)",
         [(v["versionId"], v["versionStatus"], v.get("partialValue")) for v in versions],
+    )
+
+
+# ── доступы ──
+
+
+def load_developers(conn: sqlite3.Connection) -> dict[tuple[str, str], str]:
+    """(vkId, роль) → имя пользователя."""
+    return {
+        (row[0], row[1]): row[2]
+        for row in conn.execute("SELECT vk_id, role, name FROM developers")
+    }
+
+
+def save_developers(conn: sqlite3.Connection, developers: dict[tuple[str, str], str]):
+    conn.execute("DELETE FROM developers")
+    conn.executemany(
+        "INSERT INTO developers (vk_id, role, name) VALUES (?, ?, ?)",
+        [(vk_id, role, name) for (vk_id, role), name in developers.items()],
     )
 
 
