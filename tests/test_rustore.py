@@ -56,3 +56,28 @@ def test_developers_pagination(monkeypatch, app):
 
     monkeypatch.setattr(rustore.httpx, "get", get)
     assert [d["devVkId"] for d in rustore.fetch_developers(app)] == ["1", "2"]
+
+
+def test_review_datetime_prefers_iso_field():
+    review = {"commentDate": "2024-10-16 06:59:50.050", "commentDateIso": "2024-10-16T06:57:34.17Z"}
+    assert rustore.review_datetime(review).isoformat() == "2024-10-16T06:57:34.170000+00:00"
+    assert rustore.review_datetime({"commentDate": "2024-10-16 06:59:50.050"}).isoformat() == (
+        "2024-10-16T06:59:50.050000+00:00"
+    )
+    assert rustore.review_datetime({}) is None
+
+
+def test_reviews_since_stops_at_older_page(monkeypatch, app):
+    import datetime
+
+    pages = []
+
+    def fetch(app, size, page):
+        pages.append(page)
+        updated = "2026-01-10T00:00:00Z" if page < 2 else "2025-12-01T00:00:00Z"
+        return [{"commentId": page * 100 + i, "updatedAtIso": updated} for i in range(100)]
+
+    monkeypatch.setattr(rustore, "fetch_reviews", fetch)
+    since = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    assert len(rustore.fetch_reviews_since(app, since)) == 300
+    assert pages == [0, 1, 2]

@@ -118,13 +118,40 @@ def fetch_rating(app: config.App) -> dict:
     )
 
 
-def fetch_reviews(app: config.App, size: int = 100) -> list[dict]:
-    """Получает список последних отзывов."""
+def fetch_reviews(app: config.App, size: int = 100, page: int = 0) -> list[dict]:
+    """Получает страницу последних отзывов (свежие по updatedAt — первыми)."""
     return _rustore_get(
         f"{config.RUSTORE_API_BASE}/{app.package}/comment",
         "получения отзывов",
-        params={"size": size},
+        params={"page": page, "size": size},
     )
+
+
+def review_datetime(review: dict, field: str = "commentDate") -> datetime.datetime | None:
+    """Время из отзыва: поле ``<field>Iso`` (UTC), иначе ``<field>`` без пояса — тоже UTC."""
+    for value in (review.get(f"{field}Iso"), review.get(field)):
+        if not value:
+            continue
+        try:
+            dt = datetime.datetime.fromisoformat(value)
+        except ValueError:
+            continue
+        return dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+    return None
+
+
+def fetch_reviews_since(app: config.App, since: datetime.datetime, max_pages: int = 50) -> list[dict]:
+    """Листает отзывы, пока не дойдёт до страницы, целиком опубликованной раньше since."""
+    reviews: list[dict] = []
+    for page in range(max_pages):
+        batch = fetch_reviews(app, size=100, page=page)
+        reviews.extend(batch)
+        if len(batch) < 100:
+            break
+        times = [review_datetime(r, "updatedAt") for r in batch]
+        if all(t is not None and t < since for t in times):
+            break
+    return reviews
 
 
 def fetch_products(app: config.App) -> list[dict]:

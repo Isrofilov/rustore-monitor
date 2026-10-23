@@ -222,18 +222,6 @@ def check_access(conn, app: config.App) -> CheckResult:
     return messages, save
 
 
-def _parse_local_date(value: str | None) -> datetime.date | None:
-    if not value:
-        return None
-    try:
-        dt = datetime.datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=config.LOCAL_TZ)
-    return dt.astimezone(config.LOCAL_TZ).date()
-
-
 def _collect_digest(conn, app: config.App, days: list[datetime.date], snapshot_key: str) -> tuple[dict, dict]:
     """Собирает данные для сводки за указанные дни. Возвращает (данные, новый снимок)."""
     period = set(days)
@@ -255,10 +243,12 @@ def _collect_digest(conn, app: config.App, days: list[datetime.date], snapshot_k
                 refunded_sum += amount
     data["payments"] = (paid, paid_sum, refunded, refunded_sum, currency)
 
-    # отзывы — из последних 100, по дате отзыва
+    # отзывы — по дате, когда отзыв оставлен
+    since = datetime.datetime.combine(days[0], datetime.time(), config.LOCAL_TZ)
     by_star: dict[int, int] = {}
-    for review in rustore.fetch_reviews(app):
-        if _parse_local_date(review.get("commentDate")) in period:
+    for review in rustore.fetch_reviews_since(app, since):
+        left_at = rustore.review_datetime(review)
+        if left_at and left_at.astimezone(config.LOCAL_TZ).date() in period:
             by_star[review["appRating"]] = by_star.get(review["appRating"], 0) + 1
     data["reviews"] = by_star
 

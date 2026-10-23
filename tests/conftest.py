@@ -50,7 +50,7 @@ def app(tmp_path, monkeypatch):
 def api(monkeypatch):
     fake = FakeApi()
     monkeypatch.setattr(rustore, "fetch_rating", fake.rating)
-    monkeypatch.setattr(rustore, "fetch_reviews", lambda app, size=100: fake.reviews)
+    monkeypatch.setattr(rustore, "fetch_reviews", lambda app, size=100, page=0: fake.reviews if page == 0 else [])
     monkeypatch.setattr(rustore, "fetch_invoices", lambda app, date: fake.invoices.get(date, []))
     monkeypatch.setattr(rustore, "fetch_versions", lambda app: fake.versions)
     monkeypatch.setattr(rustore, "fetch_developers", lambda app: fake.developers)

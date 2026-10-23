@@ -87,7 +87,17 @@ def _review_author(review: dict) -> str:
     user = html.escape(review.get("userName") or "—")
     version_raw = review.get("appVersionName")
     version = f"  •  v{html.escape(version_raw)}" if version_raw else ""
+    if version and review.get("appVersionCode") is not None:
+        version += f" ({review['appVersionCode']})"
     return f"{user}{version}"
+
+
+def _review_device(review: dict) -> str:
+    """Строка с устройством автора, если RuStore её прислал."""
+    info = review.get("deviceInfo") or {}
+    device = " ".join(filter(None, (info.get("device"), info.get("model"))))
+    parts = [p for p in (device, info.get("osVersion")) if p]
+    return f"📲 {html.escape('  •  '.join(parts))}\n" if parts else ""
 
 
 def format_new_review(review: dict, rating: dict) -> str:
@@ -96,6 +106,7 @@ def format_new_review(review: dict, rating: dict) -> str:
     return (
         f"📝 <b>Новый отзыв в RuStore</b>\n\n"
         f"{stars}  •  {_review_author(review)}{edited}\n"
+        f"{_review_device(review)}"
         f"«{_review_text(review.get('commentText'))}»\n\n"
         f"{format_stats(rating)}"
     )
@@ -387,7 +398,7 @@ def format_digest(kind: str, days: list[datetime.date], data: dict) -> str:
             f"  •  итого {format_amount(paid_sum - refunded_sum, currency)}"
         )
 
-    reviews = data["reviews"]
+    reviews = data["reviews"]  # звёзды → число отзывов за период
     total_reviews = sum(reviews.values())
     if total_reviews:
         by_star = "  ".join(f"⭐{star} — {reviews[star]}" for star in sorted(reviews, reverse=True))

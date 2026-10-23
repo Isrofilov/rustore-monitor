@@ -39,3 +39,15 @@ def test_user_text_is_escaped():
     text = formatting.format_new_review(review, rating)
     assert "&lt;b&gt;x&lt;/b&gt; &amp; y" in text
     assert "&lt;script&gt;" in text
+
+
+def test_review_shows_version_code_and_device():
+    review = {
+        "appRating": 4, "commentText": "ok", "userName": "U", "appVersionName": "1.4", "appVersionCode": 42,
+        "deviceInfo": {"device": "Samsung", "model": "SM-G973F", "osVersion": "Android 12"},
+    }
+    rating = {"ratings": dict.fromkeys(formatting.RATING_NAMES, 0), "averageUserRating": 0, "totalRatings": 0}
+    text = formatting.format_new_review(review, rating)
+    assert "v1.4 (42)" in text
+    assert "📲 Samsung SM-G973F  •  Android 12" in text
+    assert "📲" not in formatting.format_new_review(dict(review, deviceInfo=None), rating)

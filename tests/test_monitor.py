@@ -178,6 +178,22 @@ def test_daily_digest_sent_once(app, api, sent, monkeypatch):
     assert "возвращено:</b> 1 на 99 ₽" in digests[0]
 
 
+def test_digest_counts_reviews_by_iso_date(app, api, sent, monkeypatch):
+    monkeypatch.setattr(config, "DIGEST_DAILY", True)
+    monkeypatch.setattr(config, "DIGEST_TIME", datetime.time(0, 0))
+    yesterday_noon = datetime.datetime.combine(today() - datetime.timedelta(days=1), datetime.time(12), config.LOCAL_TZ)
+    iso = yesterday_noon.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    old = "2020-01-01T00:00:00Z"
+    api.reviews = [
+        dict(review(1, 5), commentDateIso=iso),
+        dict(review(2, 1), commentDateIso=iso),
+        dict(review(3, 3), commentDateIso=old),
+    ]
+    monitor.check_app(app)
+    digest = next(m for m in sent if "Сводка за день" in m)
+    assert "Отзывов:</b> 2  (⭐5 — 1  ⭐1 — 1)" in digest
+
+
 def test_alert_after_repeated_failures(app, api, sent, monkeypatch):
     monkeypatch.setattr(config, "ALERT_AFTER_FAILURES", 2)
 
