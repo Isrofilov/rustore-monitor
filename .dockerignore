@@ -10,3 +10,4 @@ requirements-dev.txt
 ruff.toml
 .pytest_cache
 .ruff_cache
+pytest.ini
