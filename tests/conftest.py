@@ -67,4 +67,5 @@ def sent(monkeypatch):
     monkeypatch.setattr(monitor, "notify", messages.append)
     monkeypatch.setattr(monitor.time, "sleep", lambda s: None)
     monkeypatch.setattr(monitor, "_failures", {})
+    monkeypatch.setattr(monitor, "_no_access", {})
     return messages

@@ -50,6 +50,14 @@ def format_check_recovered(name: str) -> str:
     return f"✅ <b>Проверка «{name}» снова работает</b>"
 
 
+def format_no_access(app: config.App, names: list[str]) -> str:
+    return (
+        f"🔒 <b>У ключа API нет доступа</b> к <code>{html.escape(app.package)}</code> (HTTP 403)\n"
+        f"Проверки: {html.escape(', '.join(names))}\n"
+        f"Добавьте приложение и нужные методы в ключ в RuStore Консоли."
+    )
+
+
 def format_stats(rating: dict) -> str:
     r = rating["ratings"]
     api_avg = rating["averageUserRating"]

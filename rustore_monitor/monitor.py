@@ -14,6 +14,8 @@ import json
 import datetime
 from typing import Callable
 
+import httpx
+
 from . import config, state, rustore, formatting
 from .notifiers import notify
 
@@ -341,10 +343,32 @@ def _record_result(app: config.App, header: str, name: str, error: Exception | N
         _notify_quietly(header + formatting.format_check_failing(name, threshold, error))
 
 
+# пакет → проверки, на которые ключ получил 403 и о которых уже сообщили
+_no_access: dict[str, set[str]] = {}
+
+
+def _is_forbidden(error: Exception) -> bool:
+    return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 403
+
+
+def _report_access(app: config.App, header: str, denied: list[str]):
+    """Сообщает о нехватке доступа один раз — пока он не появится снова."""
+    reported = _no_access.get(app.package, set())
+    new = [name for name in denied if name not in reported]
+    if new:
+        log.warning("%s: у ключа API нет доступа (HTTP 403): %s", app.package, ", ".join(new))
+        _notify_quietly(header + formatting.format_no_access(app, new))
+    restored = reported - set(denied)
+    if restored:
+        log.info("%s: доступ появился: %s", app.package, ", ".join(sorted(restored)))
+    _no_access[app.package] = set(denied)
+
+
 def check_app(app: config.App):
     """Выполняет все включённые проверки одного приложения и отправляет уведомления."""
     header = formatting.app_header(app) if len(config.APPS) > 1 else ""
     conn = state.get_db(app)
+    denied: list[str] = []
     try:
         for name, check in _enabled_checks():
             try:
@@ -358,11 +382,16 @@ def check_app(app: config.App):
                 conn.commit()
             except Exception as e:
                 conn.rollback()
+                if _is_forbidden(e):
+                    # ключу не выдан доступ к приложению или методу — это не сбой, сообщим один раз
+                    denied.append(name)
+                    continue
                 log.exception("Ошибка при проверке %s: %s", app.package, name)
                 _record_result(app, header, name, e)
             else:
                 _record_result(app, header, name, None)
 
+        _report_access(app, header, denied)
         state.save_meta(conn, last_check=datetime.datetime.now(config.LOCAL_TZ).isoformat())
         conn.commit()
     finally:

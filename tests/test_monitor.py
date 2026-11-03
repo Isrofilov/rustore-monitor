@@ -1,5 +1,7 @@
 import datetime
 
+import httpx
+
 from rustore_monitor import config, monitor
 
 
@@ -239,6 +241,31 @@ def test_alert_after_repeated_failures(app, api, sent, monkeypatch):
     assert len(sent) == 2
     assert "«версии» не проходит" in sent[0] and "Forbidden" in sent[0]
     assert "«версии» снова работает" in sent[1]
+
+
+def test_no_access_is_reported_once(app, api, sent, monkeypatch, caplog):
+    monkeypatch.setattr(config, "ALERT_AFTER_FAILURES", 2)
+    request = httpx.Request("GET", "https://public-api.rustore.ru/")
+
+    def forbidden(*args):
+        raise httpx.HTTPStatusError("403", request=request, response=httpx.Response(403, request=request))
+
+    monkeypatch.setattr(monitor.rustore, "fetch_rating", forbidden)
+    monkeypatch.setattr(monitor.rustore, "fetch_versions", forbidden)
+    for _ in range(3):
+        monitor.check_app(app)
+
+    assert len(sent) == 1
+    assert "нет доступа" in sent[0] and "отзывы, версии" in sent[0]
+    assert not any(r.exc_info for r in caplog.records)
+
+    # доступ выдали, потом снова отобрали — сообщаем заново
+    monkeypatch.setattr(monitor.rustore, "fetch_rating", api.rating)
+    monkeypatch.setattr(monitor.rustore, "fetch_versions", lambda app: [])
+    monitor.check_app(app)
+    monkeypatch.setattr(monitor.rustore, "fetch_versions", forbidden)
+    monitor.check_app(app)
+    assert len(sent) == 2 and "Проверки: версии" in sent[1]
 
 
 def test_multiple_apps_have_separate_state_and_header(tmp_path, api, sent, monkeypatch):
