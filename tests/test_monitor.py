@@ -70,6 +70,36 @@ def test_silent_rating(app, api, sent):
     assert len(sent) == 1 and "+2 × 3⭐" in sent[0]
 
 
+def test_deleted_review_and_rating(app, api, sent):
+    api.reviews = [review(1, 1, "плохо"), review(2, 5)]
+    api.ratings.update(amountOne=1, amountFive=2)
+    monitor.check_app(app)
+
+    api.reviews = [review(2, 5)]
+    api.ratings["amountOne"] = 0
+    monitor.check_app(app)
+    assert len(sent) == 1
+    assert "Отзыв удалён" in sent[0] and "«плохо»" in sent[0] and "Удалена оценка" not in sent[0]
+
+    # удалена тихая оценка одновременно с новой
+    api.ratings.update(amountFive=1, amountFour=1)
+    monitor.check_app(app)
+    assert len(sent) == 2
+    assert "Новая оценка:</b> +1 × 4⭐" in sent[1] and "Удалена оценка:</b> -1 × 5⭐" in sent[1]
+
+
+def test_review_pushed_off_page_is_not_deleted(app, api, sent):
+    api.reviews = [review(1, 5)]
+    api.ratings["amountFive"] = 1
+    monitor.check_app(app)
+
+    # отзыв 1 вытеснен со страницы новым, но из распределения не пропал
+    api.reviews = [review(2, 4)]
+    api.ratings["amountFour"] = 1
+    monitor.check_app(app)
+    assert len(sent) == 1 and "Новый отзыв" in sent[0]
+
+
 # ── платежи ──
 
 

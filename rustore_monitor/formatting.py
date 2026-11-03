@@ -131,18 +131,26 @@ def format_edited_review(review: dict, old_rating: int, old_text: str, rating: d
     return "\n".join(lines) + f"\n\n{format_stats(rating)}"
 
 
-def format_silent_ratings(changes: dict[int, int], rating: dict) -> str:
-    parts = []
-    for star, delta in sorted(changes.items(), reverse=True):
-        if delta > 0:
-            parts.append(f"+{delta} × {star}⭐")
-        elif delta < 0:
-            parts.append(f"{delta} × {star}⭐")
-    changes_str = ",  ".join(parts)
+def format_deleted_review(old_rating: int, old_text: str, rating: dict) -> str:
     return (
-        f"⭐ <b>Новая оценка:</b> {changes_str}\n\n"
+        f"🗑 <b>Отзыв удалён</b>\n\n"
+        f"{'⭐' * old_rating}\n"
+        f"«{_review_text(old_text)}»\n\n"
         f"{format_stats(rating)}"
     )
+
+
+def format_silent_ratings(changes: dict[int, int], rating: dict) -> str:
+    """Изменения распределения без отзывов: рост — новые оценки, убыль — удалённые."""
+    ordered = sorted(changes.items(), reverse=True)
+    added = ",  ".join(f"+{delta} × {star}⭐" for star, delta in ordered if delta > 0)
+    removed = ",  ".join(f"{delta} × {star}⭐" for star, delta in ordered if delta < 0)
+    lines = []
+    if added:
+        lines.append(f"⭐ <b>Новая оценка:</b> {added}")
+    if removed:
+        lines.append(f"🗑 <b>Удалена оценка:</b> {removed}")
+    return "\n".join(lines) + f"\n\n{format_stats(rating)}"
 
 
 # ── платежи ──

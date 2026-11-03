@@ -66,8 +66,8 @@ def check_reviews(conn, app: config.App) -> CheckResult:
     messages += [formatting.format_edited_review(r, old_r, old_t, rating) for r, old_r, old_t in edited]
 
     # «тихие» оценки без текста — обнаруживаем по изменению распределения.
-    # Вклад новых и изменённых отзывов из diff'а вычитаем, чтобы не дублировать уведомления.
-    if old_ratings:
+    # Вклад новых, изменённых и удалённых отзывов из diff'а вычитаем, чтобы не дублировать уведомления.
+    if old_ratings and not is_first_run:
         changes: dict[int, int] = {}
         for key, star in formatting.RATING_NAMES.items():
             diff = rating["ratings"].get(key, 0) - old_ratings.get(key, 0)
@@ -79,6 +79,13 @@ def check_reviews(conn, app: config.App) -> CheckResult:
             if old_rating != review["appRating"]:
                 _absorb(changes, old_rating, -1)
                 _absorb(changes, review["appRating"], +1)
+        # отзыв пропал из списка: удалён, если его оценка ушла из распределения,
+        # иначе его просто вытеснили со страницы более свежие
+        current_ids = {r["commentId"] for r in reviews}
+        for cid, (old_rating, old_text) in old_reviews.items():
+            if cid not in current_ids and old_rating is not None and changes.get(old_rating, 0) < 0:
+                messages.append(formatting.format_deleted_review(old_rating, old_text, rating))
+                _absorb(changes, old_rating, -1)
         if changes:
             messages.append(formatting.format_silent_ratings(changes, rating))
 
