@@ -17,7 +17,7 @@ from typing import Callable
 import httpx
 
 from . import config, state, rustore, formatting
-from .notifiers import notify
+from .notifiers import notify, send_to
 
 logging.basicConfig(
     level=logging.INFO,
@@ -351,6 +351,36 @@ def _is_forbidden(error: Exception) -> bool:
     return isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 403
 
 
+def _flush_outbox(conn, app: config.App):
+    """Доставляет очередь: каждый канал получает сообщение ровно один раз.
+
+    Успех фиксируется по каналам отдельно — недоступность Telegram
+    не вызывает повторов в Matrix (и наоборот). Упавший канал пропускаем
+    до следующей итерации, чтобы не ждать ретраи на каждом сообщении.
+    """
+    failed: set[str] = set()
+    for msg_id, text, tg_done, mx_done in state.load_outbox(conn):
+        done = {
+            "telegram": tg_done or not config.TELEGRAM_ENABLED,
+            "matrix": mx_done or not config.MATRIX_ENABLED,
+        }
+        for channel, already in done.items():
+            if already or channel in failed:
+                continue
+            try:
+                send_to(channel, text, msg_key=f"rustore-monitor:{app.package}:{msg_id}")
+            except Exception as e:
+                log.warning("%s: канал %s недоступен, сообщение %d останется в очереди: %s",
+                            app.package, channel, msg_id, e)
+                failed.add(channel)
+                continue
+            state.mark_sent(conn, msg_id, channel)
+            done[channel] = True
+            time.sleep(1.0)
+        if all(done.values()):
+            state.delete_outbox(conn, msg_id)
+
+
 def _report_access(app: config.App, header: str, denied: list[str]):
     """Сообщает о нехватке доступа один раз — пока он не появится снова."""
     reported = _no_access.get(app.package, set())
@@ -373,12 +403,10 @@ def check_app(app: config.App):
         for name, check in _enabled_checks():
             try:
                 messages, save = check(conn, app)
-                # При ошибке notify бросит исключение — состояние проверки НЕ будет
-                # сохранено, и на следующей итерации уведомления уйдут повторно.
-                for msg in messages:
-                    notify(header + msg)
-                    time.sleep(1.0)
+                # состояние и очередь фиксируются одной транзакцией: сбой доставки
+                # больше не «перегенерирует» уведомления на следующей итерации
                 save()
+                state.enqueue_messages(conn, [header + msg for msg in messages])
                 conn.commit()
             except Exception as e:
                 conn.rollback()
@@ -391,6 +419,7 @@ def check_app(app: config.App):
             else:
                 _record_result(app, header, name, None)
 
+        _flush_outbox(conn, app)
         _report_access(app, header, denied)
         state.save_meta(conn, last_check=datetime.datetime.now(config.LOCAL_TZ).isoformat())
         conn.commit()

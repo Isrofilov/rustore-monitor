@@ -68,7 +68,7 @@ def tg_send(text: str):
     raise RuntimeError(f"Не удалось отправить в Telegram после 3 попыток: {last_error}")
 
 
-def matrix_send(text: str):
+def matrix_send(text, txn_id: str | None = None):
     """Отправляет сообщение в Matrix-комнату через Client-Server API с ретраями."""
     body = _html_to_plain(text)
     formatted_body = text.replace("\n", "<br>")
@@ -114,6 +114,14 @@ def matrix_send(text: str):
 
     raise RuntimeError(f"Не удалось отправить в Matrix после 3 попыток: {last_error}")
 
+def send_to(channel: str, text: str, msg_key: str | None = None):
+    """Отправка в один конкретный канал (для очереди исходящих)."""
+    if channel == "telegram":
+        tg_send(text)
+    elif channel == "matrix":
+        matrix_send(text, txn_id=msg_key)
+    else:
+        raise ValueError(f"Неизвестный канал: {channel}")
 
 def notify(text: str):
     """Отправляет сообщение во все включённые каналы.

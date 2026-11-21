@@ -3,6 +3,7 @@
 import os
 import logging
 import sqlite3
+import datetime
 
 from . import config
 
@@ -71,6 +72,13 @@ def get_db(app: config.App) -> sqlite3.Connection:
             role  TEXT NOT NULL,
             name  TEXT,
             PRIMARY KEY (vk_id, role)
+        );
+        CREATE TABLE IF NOT EXISTS outbox (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            text       TEXT    NOT NULL,
+            telegram   INTEGER NOT NULL DEFAULT 0,
+            matrix     INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT    NOT NULL
         );
     """)
     # оценка и текст отзыва — чтобы ловить повторные правки и показывать «было → стало».
@@ -188,3 +196,23 @@ def save_meta(conn: sqlite3.Connection, **kwargs):
         "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
         list(kwargs.items()),
     )
+
+
+# ── очередь исходящих ──
+
+
+def enqueue_messages(conn: sqlite3.Connection, texts: list[str]):
+    """Кладёт сообщения в очередь в одной транзакции с состоянием проверки."""
+    now = datetime.datetime.now(config.LOCAL_TZ).isoformat()
+    conn.executemany("INSERT INTO outbox (text, created_at) VALUES (?, ?)", [(t, now) for t in texts])
+
+def load_outbox(conn: sqlite3.Connection) -> list[tuple[int, str, int, int]]:
+    return list(conn.execute("SELECT id, text, telegram, matrix FROM outbox ORDER BY id"))
+
+def mark_sent(conn: sqlite3.Connection, msg_id: int, channel: str):
+    conn.execute(f"UPDATE outbox SET {channel} = 1 WHERE id = ?", (msg_id,))
+    conn.commit()
+
+def delete_outbox(conn: sqlite3.Connection, msg_id: int):
+    conn.execute("DELETE FROM outbox WHERE id = ?", (msg_id,))
+    conn.commit()
