@@ -63,7 +63,9 @@ def api(monkeypatch):
 
 @pytest.fixture
 def sent(monkeypatch):
+    """Перехватывает все исходящие: уведомления через очередь и служебные."""
     messages: list[str] = []
+    monkeypatch.setattr(monitor, "send_to", lambda channel, text, msg_key=None: messages.append(text))
     monkeypatch.setattr(monitor, "notify", messages.append)
     monkeypatch.setattr(monitor.time, "sleep", lambda s: None)
     monkeypatch.setattr(monitor, "_failures", {})

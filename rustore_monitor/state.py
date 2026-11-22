@@ -206,12 +206,16 @@ def enqueue_messages(conn: sqlite3.Connection, texts: list[str]):
     now = datetime.datetime.now(config.LOCAL_TZ).isoformat()
     conn.executemany("INSERT INTO outbox (text, created_at) VALUES (?, ?)", [(t, now) for t in texts])
 
-def load_outbox(conn: sqlite3.Connection) -> list[tuple[int, str, int, int]]:
-    return list(conn.execute("SELECT id, text, telegram, matrix FROM outbox ORDER BY id"))
+
+
+def load_outbox(conn: sqlite3.Connection) -> list[tuple[int, str, str, int, int]]:
+    return list(conn.execute("SELECT id, text, created_at, telegram, matrix FROM outbox ORDER BY id"))
+
 
 def mark_sent(conn: sqlite3.Connection, msg_id: int, channel: str):
     conn.execute(f"UPDATE outbox SET {channel} = 1 WHERE id = ?", (msg_id,))
     conn.commit()
+
 
 def delete_outbox(conn: sqlite3.Connection, msg_id: int):
     conn.execute("DELETE FROM outbox WHERE id = ?", (msg_id,))

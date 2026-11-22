@@ -1,6 +1,7 @@
 import datetime
 
 import httpx
+import pytest
 
 from rustore_monitor import config, monitor
 
@@ -139,21 +140,64 @@ def test_subscription_details(app, api, sent):
     assert "продление, платёж №2" in sent[0] and "Действует до" in sent[0]
 
 
-def test_failed_notification_is_retried(app, api, monkeypatch):
+class Channels:
+    """Подменяет send_to: сохраняет доставленное по каналам, умеет «ронять» канал."""
+
+    def __init__(self):
+        self.sent: dict[str, list[str]] = {"telegram": [], "matrix": []}
+        self.keys: dict[str, list[str]] = {"telegram": [], "matrix": []}
+        self.down: set[str] = set()
+
+    def send_to(self, channel, text, msg_key=None):
+        if channel in self.down:
+            raise RuntimeError(f"{channel} недоступен")
+        self.sent[channel].append(text)
+        self.keys[channel].append(msg_key)
+
+
+@pytest.fixture
+def channels(sent, monkeypatch):
+    fake = Channels()
+    monkeypatch.setattr(monitor, "send_to", fake.send_to)
+    return fake
+
+
+def test_failed_notification_is_retried(app, api, channels):
     monitor.check_app(app)
     api.invoices = {today().isoformat(): [invoice(1, "confirmed")]}
 
-    def broken(text):
-        raise RuntimeError("Telegram недоступен")
-
-    monkeypatch.setattr(monitor, "notify", broken)
-    monkeypatch.setattr(monitor.time, "sleep", lambda s: None)
+    channels.down = {"telegram"}
     monitor.check_app(app)
+    assert channels.sent["telegram"] == []
 
-    sent = []
-    monkeypatch.setattr(monitor, "notify", sent.append)
+    channels.down = set()
     monitor.check_app(app)
-    assert len(sent) == 1 and "Новый платёж" in sent[0]
+    monitor.check_app(app)
+    tg = channels.sent["telegram"]
+    assert len(tg) == 1 and "Новый платёж" in tg[0]
+
+
+def test_unavailable_channel_does_not_duplicate_in_other(app, api, channels, monkeypatch):
+    monkeypatch.setattr(config, "MATRIX_ENABLED", True)
+    monitor.check_app(app)
+    api.invoices = {today().isoformat(): [invoice(1, "confirmed"), invoice(2, "confirmed")]}
+
+    # Telegram лежит несколько итераций — Matrix получает каждое сообщение один раз
+    channels.down = {"telegram"}
+    for _ in range(3):
+        monitor.check_app(app)
+    assert len(channels.sent["matrix"]) == 2
+    assert channels.sent["telegram"] == []
+
+    # после восстановления Telegram досылает накопленное, Matrix ничего не повторяет
+    channels.down = set()
+    monitor.check_app(app)
+    monitor.check_app(app)
+    assert channels.sent["telegram"] == channels.sent["matrix"]
+    assert len(channels.sent["matrix"]) == 2
+
+    # у каждого сообщения свой ключ идемпотентности
+    assert len(set(channels.keys["matrix"])) == 2
 
 
 # ── версии и доступы ──

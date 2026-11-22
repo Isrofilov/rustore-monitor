@@ -359,7 +359,10 @@ def _flush_outbox(conn, app: config.App):
     до следующей итерации, чтобы не ждать ретраи на каждом сообщении.
     """
     failed: set[str] = set()
-    for msg_id, text, tg_done, mx_done in state.load_outbox(conn):
+    for msg_id, text, created_at, tg_done, mx_done in state.load_outbox(conn):
+        # id из AUTOINCREMENT повторится после пересоздания базы, а Matrix помнит
+        # txn_id в рамках токена — время постановки в очередь делает ключ уникальным
+        msg_key = f"rustore-monitor:{app.package}:{msg_id}:{created_at}"
         done = {
             "telegram": tg_done or not config.TELEGRAM_ENABLED,
             "matrix": mx_done or not config.MATRIX_ENABLED,
@@ -368,7 +371,7 @@ def _flush_outbox(conn, app: config.App):
             if already or channel in failed:
                 continue
             try:
-                send_to(channel, text, msg_key=f"rustore-monitor:{app.package}:{msg_id}")
+                send_to(channel, text, msg_key=msg_key)
             except Exception as e:
                 log.warning("%s: канал %s недоступен, сообщение %d останется в очереди: %s",
                             app.package, channel, msg_id, e)

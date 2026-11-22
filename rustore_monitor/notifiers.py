@@ -5,9 +5,10 @@
 ``formatted_body`` (с заменой ``\\n`` на ``<br>``), а в ``body`` —
 текстовая версия без тегов.
 
-При исчерпании ретраев любой из включённых каналов бросает исключение —
-чтобы caller не сохранил состояние и уведомление было повторно отправлено
-на следующей итерации.
+При исчерпании ретраев отправка в канал бросает исключение. Уведомления
+проверок идут через очередь исходящих (``send_to`` по одному каналу,
+доставка отмечается по каналам отдельно); ``notify`` — для служебных
+сообщений, которые не стоят повторной доставки.
 """
 
 import re
@@ -68,8 +69,13 @@ def tg_send(text: str):
     raise RuntimeError(f"Не удалось отправить в Telegram после 3 попыток: {last_error}")
 
 
-def matrix_send(text, txn_id: str | None = None):
-    """Отправляет сообщение в Matrix-комнату через Client-Server API с ретраями."""
+def matrix_send(text: str, txn_id: str | None = None):
+    """Отправляет сообщение в Matrix-комнату через Client-Server API с ретраями.
+
+    ``txn_id`` — идемпотентный ключ: все попытки идут с одним id, и если ответ
+    потерялся, сервер распознает повтор и не создаст дубликат. Без него id
+    генерируется один раз на вызов.
+    """
     body = _html_to_plain(text)
     formatted_body = text.replace("\n", "<br>")
     payload = {
@@ -81,15 +87,17 @@ def matrix_send(text, txn_id: str | None = None):
     headers = {"Authorization": f"Bearer {config.MATRIX_ACCESS_TOKEN}"}
     room = quote(config.MATRIX_ROOM_ID, safe="")
 
+    # transaction id уникален для сообщения, но общий для его ретраев:
+    # сервер дедуплицирует повторы с тем же id в рамках access token
+    if txn_id is None:
+        txn_id = f"{int(time.time() * 1000)}-{next(_txn_counter)}"
+    url = (
+        f"{config.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/"
+        f"{room}/send/m.room.message/{quote(txn_id, safe='')}"
+    )
+
     last_error = None
     for attempt in range(3):
-        # transaction id должен быть уникален в рамках сессии,
-        # иначе сервер сочтёт повтор дубликатом и не отправит сообщение
-        txn_id = f"{int(time.time() * 1000)}-{next(_txn_counter)}"
-        url = (
-            f"{config.MATRIX_HOMESERVER}/_matrix/client/v3/rooms/"
-            f"{room}/send/m.room.message/{txn_id}"
-        )
         try:
             resp = httpx.put(url, json=payload, headers=headers, timeout=15)
         except httpx.RequestError as e:
@@ -114,6 +122,7 @@ def matrix_send(text, txn_id: str | None = None):
 
     raise RuntimeError(f"Не удалось отправить в Matrix после 3 попыток: {last_error}")
 
+
 def send_to(channel: str, text: str, msg_key: str | None = None):
     """Отправка в один конкретный канал (для очереди исходящих)."""
     if channel == "telegram":
@@ -123,12 +132,12 @@ def send_to(channel: str, text: str, msg_key: str | None = None):
     else:
         raise ValueError(f"Неизвестный канал: {channel}")
 
+
 def notify(text: str):
-    """Отправляет сообщение во все включённые каналы.
+    """Отправляет сообщение во все включённые каналы (без очереди).
 
     Если хотя бы один канал не смог доставить сообщение после ретраев —
-    бросает исключение (после попытки во все каналы), чтобы состояние не
-    сохранилось и уведомление переотправилось на следующей итерации.
+    бросает исключение после попытки во все каналы.
     """
     errors = []
 
